@@ -24,11 +24,13 @@ Step 1: Fork & Config
 
 Fork this repository to your own GitHub account.
 
-Edit scholar_sync.py:
+Edit scholar_sync.py to customize the brain of the analyst:
 
-Look for the SEARCH_QUERIES list (lines 60+).
+Research Topics: Look for SEARCH_QUERIES = [...] (approx. line 75). Replace my topics (e.g., "IT Governance") with your specific research interests.
 
-Replace my topics (IT Governance, AI Literacy) with your research interests.
+Industry Feeds: Look for RSS_FEEDS = [...] (approx. line 90). Add or remove URLs for the blogs, think tanks (like Brookings or Pew), or journals you want to monitor.
+
+Controlled Vocabulary: Look for the lists starting with VOCAB_ (e.g., VOCAB_THEORY, VOCAB_METHOD). These lists guide the AI on how to tag your papers. Update them with the theories and methods relevant to your field.
 
 Step 2: Get Your Keys
 
@@ -72,33 +74,13 @@ Step 3: Add Secrets to GitHub
 
 Go to your GitHub Repo Settings -> Secrets and variables -> Actions and add these 6 secrets:
 
-Secret Name
-
-Value
-
-ZOTERO_USER_ID
-
-Your numeric Zotero ID
-
-ZOTERO_API_KEY
-
-Your Zotero Key String
-
-GEMINI_API_KEY
-
-Your Google AI Key
-
-DROPBOX_APP_KEY
-
-Your Dropbox App Key
-
-DROPBOX_APP_SECRET
-
-Your Dropbox App Secret
-
-DROPBOX_REFRESH_TOKEN
-
-Your Dropbox Refresh Token
+| Secret Name | Value |
+| ZOTERO_USER_ID | Your numeric Zotero ID |
+| ZOTERO_API_KEY | Your Zotero Key String |
+| GEMINI_API_KEY | Your Google AI Key |
+| DROPBOX_APP_KEY | Your Dropbox App Key |
+| DROPBOX_APP_SECRET | Your Dropbox App Secret |
+| DROPBOX_REFRESH_TOKEN | Your Dropbox Refresh Token |
 
 Step 4: Turn it On
 
