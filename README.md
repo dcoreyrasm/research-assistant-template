@@ -56,7 +56,7 @@ Go to Dropbox App Console.
 
 Create an App (Scoped Access -> App Folder).
 
-Permissions: Go to the Permissions tab and check files.content.write and files.content.read. Submit.
+Permissions (CRITICAL): Go to the Permissions tab before you generate any tokens. Check files.content.write and files.content.read. Click Submit at the bottom.
 
 Generate Refresh Token:
 
@@ -65,10 +65,10 @@ https://www.dropbox.com/oauth2/authorize?client_id=YOUR_APP_KEY&token_access_typ
 
 Copy the "Access Code".
 
-Exchange it for a token using Terminal/CMD:
+Exchange it for a token using Terminal/CMD (do this quickly, the code expires in 5 mins):
 curl https://api.dropbox.com/oauth2/token -d code=YOUR_ACCESS_CODE -d grant_type=authorization_code -d client_id=YOUR_APP_KEY -d client_secret=YOUR_APP_SECRET
 
-Copy the "refresh_token" string from the result.
+Copy the "refresh_token" string from the JSON result (do not include quotes).
 
 Step 3: Add Secrets to GitHub
 
@@ -94,7 +94,15 @@ Click Run workflow.
 
 In Zotero: New papers appear tagged as #_NEW_ARRIVAL. Expand the item to see the AI-generated "10-Point Summary" note.
 
-In Dropbox: A new folder is created weekly containing markdown files of your synthesis and summaries.
+In Dropbox: A new folder is created weekly (e.g., /2025-11-28 - Research Batch/) containing:
+
+WEEKLY_SYNTHESIS.md: A narrative academic comparison of the week's papers.
+
+EXECUTIVE_BRIEF.md: A 1-page strategic memo for leadership.
+
+DEEP_DIVE_[Topic].md: A cumulative analysis of your #1 most researched topic.
+
+Individual Summaries: Markdown files for every single paper found.
 
 In GitHub: A literature_matrix.csv is updated weekly with all your data for Excel analysis.
 
