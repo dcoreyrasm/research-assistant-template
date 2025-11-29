@@ -32,7 +32,6 @@ def setup_dropbox():
         )
         
         # Test the connection immediately
-        # This will fail fast if the token is wrong, giving us a clear error
         account = dbx.users_get_current_account()
         print(f"  [Success] Connected to Dropbox account: {account.name.display_name}")
         return dbx
@@ -46,18 +45,24 @@ def setup_dropbox():
         return None
 
 def upload_files(dbx):
+    # Patterns for core synthesis files
     patterns = [
         "WEEKLY_SYNTHESIS.md",
         "EXECUTIVE_BRIEF.md",
         "DEEP_DIVE_*.md"
     ]
     
-    today = datetime.datetime.now().strftime('%Y-%m-%d')
-    dropbox_folder = f"/{today} - Research Batch"
+    # --- CHANGE: Include Hour/Minute/Second in folder name for uniqueness ---
+    timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H-%M-%S')
+    dropbox_folder = f"/{timestamp} - Research Batch"
     
     files_found = []
+    # Find core synthesis reports
     for pattern in patterns:
         files_found.extend(glob.glob(pattern))
+    
+    # Also find individual summaries in the 'summaries' subfolder
+    files_found.extend(glob.glob("summaries/*.md"))
     
     if not files_found:
         print("No reports found to upload.")
@@ -68,10 +73,16 @@ def upload_files(dbx):
     for file_path in files_found:
         with open(file_path, "rb") as f:
             file_name = os.path.basename(file_path)
-            dropbox_path = f"{dropbox_folder}/{file_name}"
             
+            # If the file came from the 'summaries' folder, put it in a 'Summaries' sub-folder in Dropbox
+            if file_path.startswith("summaries/"):
+                dropbox_path = f"{dropbox_folder}/Individual Summaries/{file_name}"
+            else:
+                dropbox_path = f"{dropbox_folder}/{file_name}"
+
             try:
-                dbx.files_upload(f.read(), dropbox_path, mode=dropbox.files.WriteMode.overwrite)
+                # Use WriteMode.add which automatically creates the unique folder and prevents accidental overwrites
+                dbx.files_upload(f.read(), dropbox_path, mode=dropbox.files.WriteMode.add)
                 print(f"  [Uploaded] {file_name}")
             except Exception as e:
                 print(f"  [Upload Failed] {file_name}: {e}")
