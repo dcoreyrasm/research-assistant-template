@@ -94,7 +94,7 @@ Click Run workflow.
 
 In Zotero: New papers appear tagged as #_NEW_ARRIVAL. Expand the item to see the AI-generated "10-Point Summary" note.
 
-In Dropbox: A new folder is created weekly (e.g., /2025-11-28 - Research Batch/) containing:
+In Dropbox: A new folder is created weekly (e.g., /2025-11-28 14-30-00 - Research Batch/) containing:
 
 WEEKLY_SYNTHESIS.md: A narrative academic comparison of the week's papers.
 
