@@ -2,21 +2,23 @@
 
 "Stop searching. Start synthesizing."
 
-This is an open-source workflow designed for Doctoral candidates and Research Leaders. It automates the discovery, analysis, and synthesis of academic literature.
+This is an open-source workflow designed for Doctoral candidates and Research Leaders. It automates the discovery, analysis, and synthesis of academic literature, turning a manual slog into a streamlined intelligence operation.
 
-Every Monday morning, this system:
+🏗️ The Ecosystem
 
-Scans 30+ sources (Semantic Scholar, EDUCAUSE, Brookings, HBR) for your research topics.
+This system integrates multiple tools into a single pipeline:
 
-Filters noise using a "Sliding Scale" algorithm (accepting only high-impact or breaking news papers).
+The Engine (GitHub Actions): Runs every Monday at 3 AM. Scans 30+ sources, filters noise, and manages data.
 
-Reads & Summarizes every paper using Google Gemini 1.5 Pro, creating a "10-Point Summary" in your Zotero notes.
+The Brain (Google Gemini): Reads papers, drafts summaries, and writes strategic briefs.
 
-Synthesizes the weekly batch into a narrative literature review draft (WEEKLY_SYNTHESIS.md) and a strategic memo (EXECUTIVE_BRIEF.md).
+The Archive (Zotero): Stores citations, PDFs, and AI-generated notes.
 
-Delivers everything to your Zotero library and a synchronized Dropbox folder.
+The Validator (Scite & Elicit): Checks credibility and extracts deep data.
 
-🚀 Setup Guide (No Coding Required)
+The Dashboard (Streamlit): Visualizes trends, gaps, and networks.
+
+🚀 Setup Guide (One-Time)
 
 To run this yourself, you need to fork this repository and add your own API keys.
 
@@ -24,86 +26,117 @@ Step 1: Fork & Config
 
 Fork this repository to your own GitHub account.
 
-Edit scholar_sync.py to customize the brain of the analyst:
+Edit scholar_sync.py to customize:
 
-Research Topics: Look for SEARCH_QUERIES = [...] (approx. line 75). Replace my topics (e.g., "IT Governance") with your specific research interests.
+SEARCH_QUERIES: Replace with your research topics (e.g., "IT Governance").
 
-Industry Feeds: Look for RSS_FEEDS = [...] (approx. line 90). Add or remove URLs for the blogs, think tanks (like Brookings or Pew), or journals you want to monitor.
+RSS_FEEDS: Add industry sources (e.g., HBR, Brookings, EDUCAUSE).
 
-Controlled Vocabulary: Look for the lists starting with VOCAB_ (e.g., VOCAB_THEORY, VOCAB_METHOD). These lists guide the AI on how to tag your papers. Update them with the theories and methods relevant to your field.
+VOCAB_ Lists: Define the theories and methods relevant to your field.
 
-Step 2: Get Your Keys
+Step 2: Get Your Keys (Free Tiers)
 
-You need 4 sets of keys. All are free tiers.
+Zotero: Get User ID and a new Key (Write Access) from Zotero Settings.
 
-1. Zotero (The Library)
+Google Gemini: Get a free API Key from Google AI Studio.
 
-Go to Zotero API Settings.
+Dropbox: Create an App in the Dropbox Console.
 
-Copy your User ID (listed at the top).
+Critical: Enable files.content.write permissions before generating the token.
 
-Create a new Key with Write Access. Copy the key string.
+Generate a refresh_token using the OAuth flow (see dropbox_sync.py comments for help).
 
-2. Google Gemini (The Brain)
-
-Go to Google AI Studio.
-
-Create a free API Key.
-
-3. Dropbox (The Delivery)
-
-Go to Dropbox App Console.
-
-Create an App (Scoped Access -> App Folder).
-
-Permissions (CRITICAL): Go to the Permissions tab before you generate any tokens. Check files.content.write and files.content.read. Click Submit at the bottom.
-
-Generate Refresh Token:
-
-Paste this URL in your browser (swap YOUR_APP_KEY with your actual key):
-https://www.dropbox.com/oauth2/authorize?client_id=YOUR_APP_KEY&token_access_type=offline&response_type=code
-
-Copy the "Access Code".
-
-Exchange it for a token using Terminal/CMD (do this quickly, the code expires in 5 mins):
-curl https://api.dropbox.com/oauth2/token -d code=YOUR_ACCESS_CODE -d grant_type=authorization_code -d client_id=YOUR_APP_KEY -d client_secret=YOUR_APP_SECRET
-
-Copy the "refresh_token" string from the JSON result (do not include quotes).
+Google Drive (Optional): Create a Service Account in Google Cloud, download the JSON key, and share a folder with the robot's email.
 
 Step 3: Add Secrets to GitHub
 
-Go to your GitHub Repo Settings -> Secrets and variables -> Actions and add these 6 secrets:
+Go to Settings -> Secrets and variables -> Actions and add:
+ZOTERO_USER_ID, ZOTERO_API_KEY, GEMINI_API_KEY, DROPBOX_APP_KEY, DROPBOX_APP_SECRET, DROPBOX_REFRESH_TOKEN (plus GDRIVE_ secrets if using Drive).
 
-| Secret Name | Value |
-| ZOTERO_USER_ID | Your numeric Zotero ID |
-| ZOTERO_API_KEY | Your Zotero Key String |
-| GEMINI_API_KEY | Your Google AI Key |
-| DROPBOX_APP_KEY | Your Dropbox App Key |
-| DROPBOX_APP_SECRET | Your Dropbox App Secret |
-| DROPBOX_REFRESH_TOKEN | Your Dropbox Refresh Token |
+📅 The Weekly Workflow (User Manual)
 
-Step 4: Turn it On
+1. Monday Morning Triage (15 Minutes)
 
-Go to the Actions tab.
+Goal: Filter the robot's findings.
 
-Select Weekly Zotero Sync.
+Open Zotero. Click the #_NEW_ARRIVAL tag.
 
-Click Run workflow.
+Scan: Review titles and AI-generated tags (🔥 Trending, ⭐ Proven).
 
-📂 What you get
+Validate with Scite:
 
-In Zotero: New papers appear tagged as #_NEW_ARRIVAL. Expand the item to see the AI-generated "10-Point Summary" note.
+Use the Scite Zotero Plugin.
 
-In Dropbox: A new folder is created weekly (e.g., /2025-11-28 14-30-00 - Research Batch/) containing:
+Look at the "Scite" column next to the paper.
 
-WEEKLY_SYNTHESIS.md: A narrative academic comparison of the week's papers.
+Green: Supported. Blue: Contrasted (Read these carefully!).
 
-EXECUTIVE_BRIEF.md: A 1-page strategic memo for leadership.
+Retracted: Delete immediately.
 
-DEEP_DIVE_[Topic].md: A cumulative analysis of your #1 most researched topic.
+Decide:
 
-Individual Summaries: Markdown files for every single paper found.
+Delete irrelevant papers.
 
-In GitHub: A literature_matrix.csv is updated weekly with all your data for Excel analysis.
+Keep good papers (remove the #_NEW_ARRIVAL tag).
+
+Expand the item to read the "10-Point AI Summary" note for a quick overview.
+
+2. Synthesis Review (10 Minutes)
+
+Goal: Get the "Big Picture" of the week.
+
+Open Dropbox/Google Drive. Find the folder [Date] - Research Batch.
+
+Read the Reports:
+
+EXECUTIVE_BRIEF.md: A strategic memo for leadership (Trends, Risks, Opportunities).
+
+WEEKLY_SYNTHESIS.md: A narrative academic summary connecting this week's papers.
+
+CONNECT_THE_DOTS.md: A cumulative analysis linking new papers to your older library.
+
+PRACTITIONER_TOOLKIT.md: Actionable frameworks and KPIs extracted from the research.
+
+3. Deep Work (Mid-Week)
+
+Goal: Extract specific data for your dissertation.
+
+Select the top 2-3 papers for deep reading.
+
+Use Elicit (The Deep Dive):
+
+If the AI summary is too high-level, upload the PDF to Elicit.com.
+
+Ask specific questions: "What was the sample size?", "How do they define 'Digital Equity'?", "What are the exact limitations?"
+
+Copy these details into your Zotero notes.
+
+4. Visualization Dashboard (Monthly Review)
+
+Goal: Spot trends and identify research gaps.
+
+Launch Streamlit:
+
+Open Terminal/CMD in your project folder.
+
+Run: streamlit run dashboard.py
+
+Explore:
+
+Trend Forecast: Are your topics growing or shrinking?
+
+Knowledge Graph: Visualize connections between papers and theories.
+
+Heatmap: Identify "Cold Zones" (years/topics with no coverage) to target your next search.
+
+5. Writing (Friday)
+
+Goal: Produce output.
+
+Open Word.
+
+Cite: Use Zotero to insert citations.
+
+Annotate: Since the robot saved the "Annotated Bib" paragraph to the Extra field, use a custom CSL style to automatically generate your Annotated Bibliography without typing.
 
 Maintained by Darice. MIT License.
