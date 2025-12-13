@@ -142,10 +142,10 @@ Customize:
 
 ## Important Notes for DBA Students
 
-* This template reflects **one research workflow**, not all workflows
-* You are responsible for ensuring methodological fit
-* Automation does not replace reading. It supports it
-* Poor customization will produce poor synthesis
+* This template reflects **one research workflow**, not all workflows.
+* You are responsible for ensuring methodological fit.
+* Automation does not replace reading. It supports it.
+* Poor customization will produce poor synthesis.
 
 If you fork this repo and tailor it well, you will end up with a living research system that supports your dissertation work week by week.
 
