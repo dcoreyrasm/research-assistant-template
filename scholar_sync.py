@@ -6,7 +6,10 @@ import google.generativeai as genai
 import pandas as pd
 import re
 import feedparser
+import csv
+import glob
 from datetime import datetime
+from pypdf import PdfReader
 
 # --- CONFIGURATION ---
 LIBRARY_ID = os.environ.get('ZOTERO_USER_ID')
@@ -19,7 +22,23 @@ CURRENT_YEAR = datetime.now().year
 YEAR_RANGE = f"{CURRENT_YEAR-2}-{CURRENT_YEAR}"
 TODAY_TAG = f"Imported: {datetime.now().strftime('%Y-%m-%d')}"
 
-# --- NOISE FILTER (BLOCKLIST) ---
+# --- LOGGING CONFIG ---
+LOG_FILE = "research_ops_log.csv"
+PROMPT_VERSION = "v3.0_Unified_Engine"
+CURRENT_MODEL = "gemini-1.5-flash-001"
+
+# --- MANUAL IMPORT LIST (Class Articles) ---
+TARGET_DATA = [
+    {"url": "https://doi.org/10.1177/0149206309343469", "title": "Resource Dependence Theory: A Review"},
+    {"url": "https://doi.org/10.1016/0304-405X(76)90026-X", "title": "Theory of the Firm: Managerial Behavior, Agency Costs and Ownership Structure"},
+    {"url": "https://doi.org/10.1177/0149206308324322", "title": "Stakeholder Theory: Reviewing a Theory That Moves Us"},
+    {"url": "https://doi.org/10.1086/467037", "title": "Separation of Ownership and Control"},
+    {"url": "https://www.cambridge.org/core/books/strategic-management/0E0D8E085EEFD52A8F4A26E9C83D802C", "title": "Strategic Management: A Stakeholder Approach"},
+    {"url": "https://global.oup.com/academic/product/corporate-strategy-and-the-search-for-ethics-9780865970351", "title": "Corporate Strategy and the Search for Ethics"},
+    {"url": "https://www.routledge.com/Understanding-Resource-Based-Theory/Barney-Clark/p/book/9780415951375", "title": "Understanding Resource-Based Theory"}
+]
+
+# --- NOISE FILTER (For RSS) ---
 NOISE_BLOCKLIST = [
     "black friday", "cyber monday", "prime day", "deal alert", "price drop",
     "gift guide", "best buy", "promo code", "coupon", "limited time offer",
@@ -28,7 +47,7 @@ NOISE_BLOCKLIST = [
     "headphones", "laptop deal", "smart home deal", "review:", "hands-on:"
 ]
 
-# --- EXPANDED CONTROLLED VOCABULARY ---
+# --- CONTROLLED VOCABULARY ---
 VOCAB_THEORY = [
     "Agency Theory", "Resource Dependence Theory", "Transaction Cost Economics", 
     "Stewardship Theory", "Institutional Theory", "Stakeholder Theory",
@@ -37,7 +56,6 @@ VOCAB_THEORY = [
     "Technology Acceptance Model (TAM)", "UTAUT", "Socio-Technical Systems Theory",
     "Actor-Network Theory", "Structuration Theory"
 ]
-
 VOCAB_METHOD = [
     "Case Study", "Survey", "Mixed Methods", "Action Research", "Ethnography",
     "Systematic Review", "Bibliometric Analysis", "Design Science Research",
@@ -47,7 +65,6 @@ VOCAB_METHOD = [
     "Thematic Analysis", "Grounded Theory", "Content Analysis",
     "Phenomenology", "Discourse Analysis", "Qualitative Interview"
 ]
-
 VOCAB_CONTEXT = [
     "Higher Education", "IT Governance", "Public Sector Management",
     "AI in Education", "Generative AI", "Large Language Models (LLMs)",
@@ -55,20 +72,18 @@ VOCAB_CONTEXT = [
     "Digital Equity", "Equity Analytics", "Student Success",
     "Digital Transformation", "Data Privacy & Ethics"
 ]
-
 VOCAB_STRATEGY = [
     "Strategic Alignment", "Competitive Advantage", "Value Creation",
     "Risk Management", "Business Process Reengineering", "Change Management",
     "Organizational Resilience", "Knowledge Management", "Strategic Planning"
 ]
-
 VOCAB_LEADERSHIP = [
     "Transformational Leadership", "Distributed Leadership", "Servant Leadership",
     "Adaptive Leadership", "Decision-Making Styles", "Organizational Culture",
     "Faculty Resistance", "Shared Governance", "Top Management Support"
 ]
 
-# SEARCH TOPICS
+# SEARCH TOPICS (Auto Discovery)
 SEARCH_QUERIES = [
     { "query": "university IT governance", "tag": "IT Governance" },
     { "query": "AI literacy higher education", "tag": "AI Literacy" },
@@ -84,7 +99,7 @@ SEARCH_QUERIES = [
     { "query": "human-AI collaboration higher education", "tag": "Future of Work" }
 ]
 
-# RSS FEEDS
+# RSS FEEDS (Auto Discovery)
 RSS_FEEDS = [
     { "url": "https://er.educause.edu/rss", "tag": "EDUCAUSE Review" },
     { "url": "https://er.educause.edu/blogs/rss", "tag": "EDUCAUSE Blogs" },
@@ -147,9 +162,7 @@ RSS_FEEDS = [
 ]
 
 def setup_gemini():
-    if not GEMINI_KEY:
-        return None
-    
+    if not GEMINI_KEY: return None
     genai.configure(api_key=GEMINI_KEY)
     
     # --- MODEL HUNTER ---
@@ -159,38 +172,23 @@ def setup_gemini():
         for m in genai.list_models():
             if 'generateContent' in m.supported_generation_methods:
                 available_models.append(m.name)
-        
         priorities = ['gemini-1.5-flash', 'gemini-1.5-flash-001', 'gemini-1.5-flash-latest', 'gemini-1.5-pro', 'gemini-pro']
         selected_model = None
-        
         for p in priorities:
             for m in available_models:
                 if p in m:
                     selected_model = m
                     break
-            if selected_model:
-                break
+            if selected_model: break
         
-        if not selected_model and available_models:
-            selected_model = available_models[0]
-
-        if not selected_model:
-            print("  [Setup Warning] Could not list models. Forcing 'gemini-1.5-flash'.")
-            selected_model = 'gemini-1.5-flash'
-
-        print(f"  [Setup] Locking in model: {selected_model}")
+        if not selected_model and available_models: selected_model = available_models[0]
+        if not selected_model: selected_model = 'gemini-1.5-flash'
         return genai.GenerativeModel(selected_model)
-            
     except Exception as e:
         print(f"  [Setup Error] Model listing failed: {e}")
         return genai.GenerativeModel('gemini-1.5-flash')
 
 # --- LOGGING FUNCTION ---
-import csv
-LOG_FILE = "research_ops_log.csv"
-PROMPT_VERSION = "v2.2_Annotated_Bib"
-CURRENT_MODEL = "gemini-1.5-flash-001"
-
 def log_operation(action, title, details, status):
     file_exists = os.path.isfile(LOG_FILE)
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -200,9 +198,65 @@ def log_operation(action, title, details, status):
             writer.writerow(['Timestamp', 'Action', 'Status', 'Paper_Title', 'Prompt_Version', 'Model', 'Details'])
         writer.writerow([timestamp, action, status, title, PROMPT_VERSION, CURRENT_MODEL, details])
 
-def analyze_paper_with_ai(model, title, abstract, authors, year):
-    if not model or not abstract:
+def extract_text_from_pdf(pdf_path):
+    try:
+        reader = PdfReader(pdf_path)
+        text = ""
+        for i in range(min(5, len(reader.pages))):
+            text += reader.pages[i].extract_text() + "\n"
+        return text
+    except Exception as e:
+        print(f"  [PDF Error] Could not read file: {e}")
         return None
+
+def lookup_paper_details(item_data, pdf_text=None):
+    """
+    Used for Manual Import: Resolves URL/DOI to paper details.
+    """
+    url = item_data.get('url', '')
+    search_title = item_data['title']
+    paper_id = None
+    
+    if "doi.org/" in url:
+        paper_id = "DOI:" + url.split("doi.org/")[1]
+    elif "semanticscholar.org/paper/" in url:
+        match = re.search(r'paper/.*?/([a-f0-9]+)', url)
+        if match: paper_id = match.group(1)
+    
+    if paper_id:
+        api_url = f"https://api.semanticscholar.org/graph/v1/paper/{paper_id}"
+        params = {"fields": "title,abstract,authors,year,venue,externalIds,url,openAccessPdf,citationCount"}
+        try:
+            r = requests.get(api_url, params=params, timeout=10)
+            if r.status_code == 200:
+                data = r.json()
+                if not data.get('abstract') and pdf_text: data['abstract'] = pdf_text
+                if not data.get('abstract'): data['abstract'] = ""
+                return data
+        except: pass
+    
+    if search_title:
+        search_url = "https://api.semanticscholar.org/graph/v1/paper/search"
+        params = {"query": search_title, "limit": 1, "fields": "title,abstract,authors,year,venue,externalIds,url,openAccessPdf,citationCount"}
+        try:
+            r = requests.get(search_url, params=params, timeout=10)
+            if r.status_code == 200:
+                data = r.json()
+                if data.get('data'):
+                    best_match = data['data'][0]
+                    if not best_match.get('abstract') and pdf_text: best_match['abstract'] = pdf_text
+                    if not best_match.get('abstract'): best_match['abstract'] = ""
+                    return best_match
+        except: pass
+
+    # PDF Fallback
+    if pdf_text:
+        return {'title': search_title, 'url': url, 'year': datetime.now().year, 'abstract': pdf_text}
+
+    return {'title': search_title, 'url': url, 'year': datetime.now().year, 'abstract': ""}
+
+def analyze_paper_with_ai(model, title, abstract, authors, year):
+    if not model: return None
 
     # We format the vocab lists into strings for the prompt
     theory_str = ", ".join(VOCAB_THEORY)
@@ -211,53 +265,30 @@ def analyze_paper_with_ai(model, title, abstract, authors, year):
     strategy_str = ", ".join(VOCAB_STRATEGY)
     leadership_str = ", ".join(VOCAB_LEADERSHIP)
 
+    # Fallback Logic for empty abstract
+    context_instruction = f"Abstract/Context: {abstract}"
+    if not abstract or len(abstract) < 50:
+        context_instruction = f"NOTE: No abstract provided. Please summarize this paper based on your internal training data: '{title}' by {authors} ({year})."
+
     prompt = f"""
-    Act as a research assistant for a DBA student and Yale IT Leader.
+    Act as a research assistant for me (Darice), a DBA student and Yale IT Leader.
     Analyze the abstract/summary provided below for a newly discovered paper.
+    
+    {context_instruction}
     
     Draft a "10-Point Reading Summary" based STRICTLY on the provided text.
     
     TONE & STYLE INSTRUCTIONS (DARICE'S VOICE):
     1.  **Voice:** Write in the first person ('I', 'My'). Use a warm but grounded tone.
     2.  **Style:** Keep sentences clean, steady, and direct. No fluff. No em dashes (use periods/commas).
-    3.  **Avoid:** Jargon, corporate speak, 'tech marketing' hype, or overly poetic language.
+    3.  **Avoid:** Jargon, corporate speak, 'tech marketing' hype, overly poetic language.
     4.  **Perspective:** Balance strategy with practical clarity.
-    5.  **Prohibited:** DO NOT start with "Of course" or "Here is the summary". Start directly with the content.
-    
-    Paper: {title} ({year}) by {authors}
-    Abstract/Context: {abstract}
     
     OUTPUT FORMAT:
     
     <h3>1. Keywords</h3>
-    <p><strong>[Keyword 1]</strong>, <strong>[Keyword 2]</strong>, ...</p>
-
-    <h3>2. Subject</h3>
-    <p><strong>General:</strong> [Broad Field]<br><strong>Specific:</strong> [Narrow Focus]</p>
-
-    <h3>3. Research Question & Takeaway</h3>
-    <p><strong>Question:</strong> [Infer the question]<br><strong>Takeaway:</strong> [Significant idea]</p>
-
-    <h3>4. Methodological Approach</h3>
-    <p><strong>Method:</strong> [Infer method]<br><strong>Sample:</strong> [Population]<br><strong>Reflection:</strong> [My critique of the rigor]</p>
-
-    <h3>5. Results / Findings</h3>
-    <p><strong>Findings:</strong> [Summarize key results]<br><strong>Reflection:</strong> [How this connects to my work]</p>
-
-    <h3>6. Limitations</h3>
-    <p>[List limitations]</p>
-
-    <h3>7. Significance</h3>
-    <p><strong>Reflection:</strong> [Why this matters to my DBA research at Yale]</p>
-
-    <h3>8. Originality</h3>
-    <p><strong>Contribution:</strong> [What is new?]</p>
-
-    <h3>9. AI Disclosure</h3>
-    <p><strong>Tool:</strong> Google Gemini via Python Script.<br><strong>Reflection:</strong> Initial summary drafted by AI; verified by Darice.</p>
-
+    ... [Standard 10 points] ...
     <h3>10. Next Steps</h3>
-    <p>[Placeholder for future references]</p>
     
     <h3>ANNOTATED BIBLIOGRAPHY ENTRY</h3>
     [Write a single coherent paragraph of approx 150-200 words.
@@ -277,7 +308,7 @@ def analyze_paper_with_ai(model, title, abstract, authors, year):
     LEADERSHIP: {leadership_str}
     """
     
-    # Retry Logic for Rate Limits (429 Errors)
+    # Retry Logic for Rate Limits
     max_retries = 3
     for attempt in range(max_retries):
         try:
@@ -285,7 +316,7 @@ def analyze_paper_with_ai(model, title, abstract, authors, year):
             return response.text
         except Exception as e:
             if "429" in str(e):
-                print(f"  [AI 429] Rate limit hit. Cooling down for 60s... (Attempt {attempt+1}/{max_retries})")
+                print(f"  [AI 429] Rate limit hit. Cooling down for 60s...")
                 time.sleep(60)
             else:
                 print(f"  [AI Error] {e}")
@@ -328,7 +359,6 @@ def parse_ai_response(ai_text):
     return tags, clean_note, setting, annotated_bib
 
 def format_abstract_for_readability(text):
-    """Inserts line breaks before common structured abstract headers."""
     if not text: return ""
     headers = ["Background:", "Methods:", "Results:", "Conclusion:", "Objective:", "Discussion:", "Findings:"]
     formatted = text
@@ -412,6 +442,19 @@ def save_matrix_csv(items, existing_df=None):
     final_df.to_csv("literature_matrix.csv", index=False)
     print("  [Matrix Saved] literature_matrix.csv updated.")
 
+def save_summary_file(year, title, note_content, bib_content):
+    os.makedirs("summaries", exist_ok=True)
+    safe_title = re.sub(r'[\\/*?:"<>|]', "", title)
+    filename = f"summaries/{year} - {safe_title}.md"
+    md_content = note_content.replace("<h3>", "### ").replace("</h3>", "\n").replace("<p>", "").replace("</p>", "\n\n").replace("<b>", "**").replace("</b>", "**").replace("<br>", "\n")
+    with open(filename, "w", encoding="utf-8") as f:
+        f.write(f"# {title}\n\n")
+        f.write("## Annotated Bibliography Entry\n")
+        f.write(bib_content + "\n\n")
+        f.write("## 10-Point Summary\n")
+        f.write(md_content)
+    print(f"  [File Saved] {filename}")
+
 def update_readme_dashboard(items):
     filename = "LAST_RUN_LOG.md" 
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M')
@@ -429,47 +472,14 @@ def update_readme_dashboard(items):
                 f.write(f"| {citations} | {icon} | {topic} | {title_display} |\n")
     print(f"  [Log Updated]")
 
-def process_searches():
-    if not LIBRARY_ID or not API_KEY: return
-    zot = zotero.Zotero(LIBRARY_ID, LIBRARY_TYPE, API_KEY)
-    ai_model = setup_gemini()
-    report_data = []
-    zotero_memory = load_zotero_titles(zot)
-    existing_df = None
-    if os.path.exists("literature_matrix.csv"):
-        try: existing_df = pd.read_csv("literature_matrix.csv")
-        except: pass
-        if existing_df is not None and not existing_df.empty:
-            for t in existing_df['Title']: 
-                if pd.notna(t): zotero_memory.add(str(t).lower().strip())
-
-    print(f"Starting Analyst Engine. Batch: {TODAY_TAG}")
-
-    # --- PROCESS 1: ACADEMIC PAPERS ---
-    for search in SEARCH_QUERIES:
-        query = search['query']
-        tag_name = search['tag']
-        print(f"\nSearching (Academic): '{query}'...")
-        papers = search_semantic_scholar(query)
-        if not papers: continue
-        
-        process_batch(papers, zot, ai_model, tag_name, report_data, zotero_memory, is_academic=True)
-
-    # --- PROCESS 2: INDUSTRY FEEDS (RSS) ---
-    for feed in RSS_FEEDS:
-        url = feed['url']
-        tag_name = feed['tag']
-        papers = fetch_rss_feed(url)
-        if not papers: continue
-        process_batch(papers, zot, ai_model, tag_name, report_data, zotero_memory, is_academic=False)
-
-    update_readme_dashboard(report_data)
-    save_matrix_csv(report_data, existing_df)
-
-def process_batch(papers, zot, ai_model, tag_name, report_data, zotero_memory, is_academic):
+# --- SHARED PROCESS FUNCTION (The Engine) ---
+def process_batch(papers, zot, ai_model, tag_name, report_data, zotero_memory, is_academic, is_manual=False):
     for paper in papers:
         title = paper.get('title', 'No Title')
-        if title.lower().strip() in zotero_memory: continue
+        
+        # Check Dupes (Skip if already in library, UNLESS it's a Manual Force Import)
+        if title.lower().strip() in zotero_memory and not is_manual: 
+            continue
 
         citations = paper.get('citationCount', 0)
         p_year = paper.get('year', CURRENT_YEAR)
@@ -493,7 +503,6 @@ def process_batch(papers, zot, ai_model, tag_name, report_data, zotero_memory, i
                             zotero_creators.append({'creatorType': 'author', 'firstName': first, 'lastName': last})
                         else:
                             zotero_creators.append({'creatorType': 'author', 'firstName': '', 'lastName': auth['name']})
-                
                 author_str = ", ".join([a['name'] for a in paper['authors'][:3]])
                 if len(paper['authors']) > 3: author_str += " et al."
             except:
@@ -501,25 +510,33 @@ def process_batch(papers, zot, ai_model, tag_name, report_data, zotero_memory, i
         else:
              zotero_creators = [{'creatorType': 'author', 'firstName': '', 'lastName': 'Unknown'}]
 
-        if is_academic:
+        # FILTERING: Apply Sliding Scale only if Academic & Not Manual
+        if is_academic and not is_manual:
             required_citations, smart_tag = get_sliding_scale_rules(p_year)
-            if citations < required_citations: continue
+            if citations < required_citations: 
+                log_operation("Filter Impact", title, f"Cites: {citations} < {required_citations}", "Filtered")
+                continue
+        elif is_manual:
+            smart_tag = "📌 Manual Import"
         else:
             smart_tag = "📢 Industry Insight"
 
         ai_tags, ai_note_content, setting, annotated_bib = [], "", "Unknown", ""
         
-        if ai_model and abstract:
+        # AI ANALYSIS (Permissive Mode for Manual)
+        if ai_model:
             print(f"  [AI] Drafting Note: {title[:30]}...")
             ai_text = analyze_paper_with_ai(ai_model, title, abstract, author_str, p_year)
             ai_tags, ai_note_content, setting, annotated_bib = parse_ai_response(ai_text)
             
-            # STRICT MODE
-            if not ai_note_content:
+            # STRICT MODE: If AI fails, skip (unless manual)
+            if not ai_note_content and not is_manual:
                 print(f"  [Skipped] AI Analysis failed for: {title[:30]}")
                 continue
+            elif not ai_note_content and is_manual:
+                print(f"  [Warning] AI failed, but saving Manual Import anyway.")
+                ai_note_content = "<h3>Manual Entry Required</h3><p>AI failed. Please fill manually.</p>"
             
-            # 1 second sleep (Paid Tier)
             time.sleep(1)
 
         template = zot.item_template('journalArticle' if is_academic else 'webpage')
@@ -546,8 +563,6 @@ def process_batch(papers, zot, ai_model, tag_name, report_data, zotero_memory, i
             resp = zot.create_items([template])
             if resp and 'successful' in resp:
                 print(f"  [Success] Added: {title[:20]}...")
-                
-                # LOGGING
                 log_operation("Import", title, f"Source: {tag_name}", "Success")
 
                 parent_key = resp['successful']['0']['key']
@@ -559,11 +574,11 @@ def process_batch(papers, zot, ai_model, tag_name, report_data, zotero_memory, i
                     note_template['tags'] = [{'tag': '10-Point-Draft'}]
                     zot.create_items([note_template])
                     
-                    # Note 2: Annotated Bib (Renamed with Author/Year for search)
+                    # Note 2: Annotated Bib (Separate note)
                     if annotated_bib:
                         bib_note = zot.item_template('note')
                         bib_note['parentItem'] = parent_key
-                        # Use Author in title for easy Zotero search
+                        # FIX: Unique title for Word plugin search
                         bib_note['note'] = f"<h3>Annotated Bib: {author_str} ({p_year})</h3><p>{annotated_bib}</p>"
                         bib_note['tags'] = [{'tag': 'Annotated Bib'}]
                         zot.create_items([bib_note])
@@ -573,6 +588,67 @@ def process_batch(papers, zot, ai_model, tag_name, report_data, zotero_memory, i
         except Exception as e: 
             print(f"  [Upload Error] {e}")
             log_operation("Zotero Upload", title, str(e), "Error")
+
+def process_searches():
+    if not LIBRARY_ID or not API_KEY: return
+    zot = zotero.Zotero(LIBRARY_ID, LIBRARY_TYPE, API_KEY)
+    ai_model = setup_gemini()
+    report_data = []
+    
+    zotero_memory = load_zotero_titles(zot)
+    existing_df = None
+    if os.path.exists("literature_matrix.csv"):
+        try: existing_df = pd.read_csv("literature_matrix.csv")
+        except: pass
+        if existing_df is not None and not existing_df.empty:
+            for t in existing_df['Title']: 
+                if pd.notna(t): zotero_memory.add(str(t).lower().strip())
+
+    print(f"Starting Analyst Engine. Batch: {TODAY_TAG}")
+
+    # --- PROCESS 0: MANUAL IMPORT LIST (Prioritize this!) ---
+    # First, convert TARGET_DATA URLs into paper objects
+    manual_papers = []
+    
+    # Check manual_pdfs folder first
+    if os.path.exists("manual_pdfs"):
+        pdf_files = glob.glob("manual_pdfs/*.pdf")
+        for pdf in pdf_files:
+             clean_title = os.path.splitext(os.path.basename(pdf))[0]
+             # Reuse lookup logic from manual_import (simplified here for integration)
+             pdf_text = extract_text_from_pdf(pdf)
+             manual_papers.append(lookup_paper_details({'title': clean_title, 'url': ''}, pdf_text))
+
+    # Check URL list
+    for item in TARGET_DATA:
+        paper = lookup_paper_details(item) # Reusing helper to fetch API data
+        manual_papers.append(paper)
+    
+    if manual_papers:
+        print(f"\nProcessing {len(manual_papers)} Manual Items...")
+        process_batch(manual_papers, zot, ai_model, "Manual Import", report_data, zotero_memory, is_academic=True, is_manual=True)
+
+
+    # --- PROCESS 1: ACADEMIC PAPERS ---
+    for search in SEARCH_QUERIES:
+        query = search['query']
+        tag_name = search['tag']
+        print(f"\nSearching (Academic): '{query}'...")
+        papers = search_semantic_scholar(query)
+        if not papers: continue
+        
+        process_batch(papers, zot, ai_model, tag_name, report_data, zotero_memory, is_academic=True)
+
+    # --- PROCESS 2: INDUSTRY FEEDS (RSS) ---
+    for feed in RSS_FEEDS:
+        url = feed['url']
+        tag_name = feed['tag']
+        papers = fetch_rss_feed(url)
+        if not papers: continue
+        process_batch(papers, zot, ai_model, tag_name, report_data, zotero_memory, is_academic=False)
+
+    update_readme_dashboard(report_data)
+    save_matrix_csv(report_data, existing_df)
 
 if __name__ == "__main__":
     process_searches()
