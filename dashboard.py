@@ -17,8 +17,8 @@ except ImportError:
 # Page Config
 st.set_page_config(page_title="Research Ops Dashboard", layout="wide", page_icon="🎓")
 
-st.title("🎓 Research Ops: The 'Darice' Engine")
-st.markdown("### Automated Intelligence for DBA Research")
+st.title("🎓 Research Ops Dashboard")
+st.markdown("### Automated Intelligence for Academic Research")
 
 # --- DATA LOADING ---
 @st.cache_data
