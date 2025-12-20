@@ -1,8 +1,6 @@
-from pyzotero import zotero
-import time
 import os
+import time
 import requests
-import google.generativeai as genai
 import pandas as pd
 import re
 import feedparser
@@ -10,12 +8,15 @@ import csv
 import glob
 from datetime import datetime
 from pypdf import PdfReader
+from difflib import SequenceMatcher
+from pyzotero import zotero
+import google.generativeai as genai
 
 # --- CONFIGURATION ---
 LIBRARY_ID = os.environ.get('ZOTERO_USER_ID')
 API_KEY = os.environ.get('ZOTERO_API_KEY')
 GEMINI_KEY = os.environ.get('GEMINI_API_KEY')
-LIBRARY_TYPE = 'user'
+LIBRARY_TYPE = 'user' # or 'group'
 
 # DATE & TAGGING
 CURRENT_YEAR = datetime.now().year
@@ -24,208 +25,133 @@ TODAY_TAG = f"Imported: {datetime.now().strftime('%Y-%m-%d')}"
 
 # --- LOGGING CONFIG ---
 LOG_FILE = "research_ops_log.csv"
-PROMPT_VERSION = "v3.0_Unified_Engine"
-CURRENT_MODEL = "gemini-1.5-flash-001"
+PROMPT_VERSION = "v1.0_Template"
 
-# --- MANUAL IMPORT LIST (Class Articles) ---
-TARGET_DATA = [
-    {"url": "https://doi.org/10.1177/0149206309343469", "title": "Resource Dependence Theory: A Review"},
-    {"url": "https://doi.org/10.1016/0304-405X(76)90026-X", "title": "Theory of the Firm: Managerial Behavior, Agency Costs and Ownership Structure"},
-    {"url": "https://doi.org/10.1177/0149206308324322", "title": "Stakeholder Theory: Reviewing a Theory That Moves Us"},
-    {"url": "https://doi.org/10.1086/467037", "title": "Separation of Ownership and Control"},
-    {"url": "https://www.cambridge.org/core/books/strategic-management/0E0D8E085EEFD52A8F4A26E9C83D802C", "title": "Strategic Management: A Stakeholder Approach"},
-    {"url": "https://global.oup.com/academic/product/corporate-strategy-and-the-search-for-ethics-9780865970351", "title": "Corporate Strategy and the Search for Ethics"},
-    {"url": "https://www.routledge.com/Understanding-Resource-Based-Theory/Barney-Clark/p/book/9780415951375", "title": "Understanding Resource-Based Theory"}
+# --- USER CONFIGURATION SECTION ---
+
+# 1. Define your core research questions for the AI to align against
+MY_RESEARCH_QUESTIONS = [
+    "Question 1: [Insert your primary research question here?]",
+    "Question 2: [Insert secondary question?]",
+    "Question 3: [Insert tertiary question?]"
 ]
 
-# --- NOISE FILTER (For RSS) ---
+# 2. Blocklist for RSS noise (e.g., shopping deals if using tech feeds)
 NOISE_BLOCKLIST = [
-    "black friday", "cyber monday", "prime day", "deal alert", "price drop",
-    "gift guide", "best buy", "promo code", "coupon", "limited time offer",
-    "on sale", "clearance", "doorbuster", "shopping list", "best deals",
-    "must-have", "gadget", "appliance", "vacuum", "mattress", "tv deal",
-    "headphones", "laptop deal", "smart home deal", "review:", "hands-on:"
+    "black friday", "cyber monday", "deal alert", "price drop", "limited time offer"
 ]
 
-# --- CONTROLLED VOCABULARY ---
-VOCAB_THEORY = [
-    "Agency Theory", "Resource Dependence Theory", "Transaction Cost Economics", 
-    "Stewardship Theory", "Institutional Theory", "Stakeholder Theory",
-    "Diffusion of Innovation", "Disruptive Innovation", "Dynamic Capabilities",
-    "Absorptive Capacity", "Organizational Learning Theory",
-    "Technology Acceptance Model (TAM)", "UTAUT", "Socio-Technical Systems Theory",
-    "Actor-Network Theory", "Structuration Theory"
-]
-VOCAB_METHOD = [
-    "Case Study", "Survey", "Mixed Methods", "Action Research", "Ethnography",
-    "Systematic Review", "Bibliometric Analysis", "Design Science Research",
-    "Regression Analysis", "Structural Equation Modeling (SEM)", "Factor Analysis (EFA/CFA)",
-    "Panel Data Analysis", "Time Series Analysis", "Difference-in-Differences",
-    "Experimental Design", "ANOVA/MANOVA", "Machine Learning", "Social Network Analysis",
-    "Thematic Analysis", "Grounded Theory", "Content Analysis",
-    "Phenomenology", "Discourse Analysis", "Qualitative Interview"
-]
-VOCAB_CONTEXT = [
-    "Higher Education", "IT Governance", "Public Sector Management",
-    "AI in Education", "Generative AI", "Large Language Models (LLMs)",
-    "Algorithmic Bias", "Responsible AI", "Human-AI Collaboration",
-    "Digital Equity", "Equity Analytics", "Student Success",
-    "Digital Transformation", "Data Privacy & Ethics"
-]
-VOCAB_STRATEGY = [
-    "Strategic Alignment", "Competitive Advantage", "Value Creation",
-    "Risk Management", "Business Process Reengineering", "Change Management",
-    "Organizational Resilience", "Knowledge Management", "Strategic Planning"
-]
-VOCAB_LEADERSHIP = [
-    "Transformational Leadership", "Distributed Leadership", "Servant Leadership",
-    "Adaptive Leadership", "Decision-Making Styles", "Organizational Culture",
-    "Faculty Resistance", "Shared Governance", "Top Management Support"
-]
+# 3. Controlled Vocabulary (Used for auto-tagging)
+# Replace these examples with your domain-specific terms
+VOCAB_THEORY = ["Theory A", "Theory B", "System Systems Theory"]
+VOCAB_METHOD = ["Case Study", "Survey", "Mixed Methods", "Quantitative Analysis"]
+VOCAB_CONTEXT = ["Industry A", "Sector B", "Context C", "Context D"]
 
-# SEARCH TOPICS (Auto Discovery)
+# 4. Semantic Scholar Search Queries
 SEARCH_QUERIES = [
-    { "query": "university IT governance", "tag": "IT Governance" },
-    { "query": "AI literacy higher education", "tag": "AI Literacy" },
-    { "query": "resource dependence theory higher education", "tag": "Resource Dependence Theory" },
-    { "query": "student engagement equity analytics", "tag": "Equity Analytics" },
-    { "query": "digital equity higher education", "tag": "Digital Equity" },
-    { "query": "AI governance higher education", "tag": "AI Governance" },
-    { "query": "university data governance decision making", "tag": "Data Governance" },
-    { "query": "generative AI higher education", "tag": "Generative AI" },
-    { "query": "AI in higher education administration", "tag": "Admin & Ops" },
-    { "query": "faculty AI adoption resistance", "tag": "Change Management" },
-    { "query": "generative AI academic integrity policy", "tag": "Policy & Risk" },
-    { "query": "human-AI collaboration higher education", "tag": "Future of Work" }
+    { "query": "your topic keyword here", "tag": "Topic A" },
+    { "query": "another topic keyword", "tag": "Topic B" },
 ]
 
-# RSS FEEDS (Auto Discovery)
+# 5. RSS Feeds to Monitor
 RSS_FEEDS = [
-    { "url": "https://er.educause.edu/rss", "tag": "EDUCAUSE Review" },
-    { "url": "https://er.educause.edu/blogs/rss", "tag": "EDUCAUSE Blogs" },
-    { "url": "https://er.educause.edu/multimedia/rss", "tag": "EDUCAUSE Multimedia" },
-    { "url": "https://www.educause.edu/rss", "tag": "EDUCAUSE Policy" },
-    { "url": "https://library.educause.edu/search?q=artificial+intelligence&rss=true", "tag": "EDUCAUSE Lib: AI" },
-    { "url": "https://library.educause.edu/search?q=digital+transformation&rss=true", "tag": "EDUCAUSE Lib: Dx" },
-    { "url": "https://library.educause.edu/search?q=student+success&rss=true", "tag": "EDUCAUSE Lib: Student Success" },
-    { "url": "https://library.educause.edu/search?q=governance&rss=true", "tag": "EDUCAUSE Lib: Governance" },
-    { "url": "https://www.insidehighered.com/rss/news", "tag": "IHE: News" },
-    { "url": "https://www.insidehighered.com/rss/opinion", "tag": "IHE: Opinion" },
-    { "url": "https://www.insidehighered.com/rss/section/student-success", "tag": "IHE: Student Success" },
-    { "url": "https://www.insidehighered.com/rss/section/technology", "tag": "IHE: Tech" },
-    { "url": "https://www.insidehighered.com/rss/section/careers", "tag": "IHE: Careers" },
-    { "url": "https://www.chronicle.com/section/all/rss", "tag": "Chronicle: All" },
-    { "url": "https://www.chronicle.com/section/opinion/rss", "tag": "Chronicle: Opinion" },
-    { "url": "https://www.chronicle.com/section/teaching-learning/rss", "tag": "Chronicle: Teaching" },
-    { "url": "https://www.chronicle.com/section/technology/rss", "tag": "Chronicle: Tech" },
-    { "url": "https://www.highereddive.com/rss/", "tag": "Higher Ed Dive" },
-    { "url": "https://www.timeshighereducation.com/rss", "tag": "Times Higher Ed" },
-    { "url": "https://www.universityworldnews.com/rss/", "tag": "Univ World News" },
-    { "url": "https://hechingerreport.org/feed/", "tag": "Hechinger Report" },
-    { "url": "https://www.edweek.org/feeds/rss/articles/index.rss", "tag": "EdWeek" },
-    { "url": "https://www.educationnext.org/feed/", "tag": "Education Next" },
-    { "url": "https://www.brookings.edu/feed/", "tag": "Brookings: General" },
-    { "url": "https://www.brookings.edu/topic/education/feed/", "tag": "Brookings: Education" },
-    { "url": "https://www.brookings.edu/topic/artificial-intelligence/feed/", "tag": "Brookings: AI" },
-    { "url": "https://www.brookings.edu/topic/governance/feed/", "tag": "Brookings: Governance" },
-    { "url": "https://www.pewresearch.org/feed/", "tag": "Pew: General" },
-    { "url": "https://www.pewresearch.org/internet/feed/", "tag": "Pew: Internet/Tech" },
-    { "url": "https://www.pewresearch.org/topic/education/feed/", "tag": "Pew: Education" },
-    { "url": "https://www.rand.org/education-and-labor.html/rss.xml", "tag": "RAND Education" },
-    { "url": "https://www.newamerica.org/education-policy/feed/", "tag": "New America Ed" },
-    { "url": "https://www.americanprogress.org/topic/education/feed/", "tag": "Center Am Progress" },
-    { "url": "https://www.urban.org/taxonomy/term/6/feed", "tag": "Urban Institute" },
-    { "url": "https://www.nber.org/feeds/working_papers.xml", "tag": "NBER Working Papers" },
-    { "url": "https://technews.acm.org/backend.php", "tag": "ACM TechNews" },
-    { "url": "http://feeds.arstechnica.com/arstechnica/index", "tag": "Ars Technica" },
-    { "url": "https://www.wired.com/feed/rss", "tag": "Wired" },
-    { "url": "https://www.theverge.com/rss/index.xml", "tag": "The Verge" },
-    { "url": "https://ai.googleblog.com/feeds/posts/default", "tag": "Google AI Blog" },
-    { "url": "https://www.microsoft.com/en-us/research/feed/", "tag": "Microsoft Research" },
-    { "url": "https://hai.stanford.edu/news/rss.xml", "tag": "Stanford HAI" },
-    { "url": "https://bair.berkeley.edu/blog/feed.xml", "tag": "Berkeley BAIR" },
-    { "url": "https://www.csail.mit.edu/rss/news", "tag": "MIT CSAIL" },
-    { "url": "https://www.benton.org/feed", "tag": "Benton Institute" },
-    { "url": "https://datasociety.net/feed/", "tag": "Data & Society" },
-    { "url": "https://montrealethics.ai/feed/", "tag": "Montreal AI Ethics" },
-    { "url": "https://www.technologyreview.com/feed/", "tag": "MIT Tech Review" },
-    { "url": "https://feeds.hbr.org/harvardbusiness", "tag": "Harvard Business Review" },
-    { "url": "https://ssir.org/articles/rss", "tag": "Stanford Social Innovation" },
-    { "url": "https://sloanreview.mit.edu/feed/", "tag": "MIT Sloan Review" },
-    { "url": "https://www.mckinsey.com/insights/rss", "tag": "McKinsey Insights" },
-    { "url": "https://www2.deloitte.com/global/en/insights/find-insights.html?format=rss", "tag": "Deloitte Insights" },
-    { "url": "http://feeds.plos.org/plosone/LatestArticles", "tag": "PLOS ONE" },
-    { "url": "https://www.frontiersin.org/journals/education/rss", "tag": "Frontiers in Ed" },
-    { "url": "https://www.learntechlib.org/journal/JOLR/latest?format=rss", "tag": "JOLR Journal" },
-    { "url": "https://eric.ed.gov/rss/rss.xml", "tag": "ERIC Database" },
-    { "url": "https://www.oecd.org/education/publicationsdocumenttype/workingpapers/rss.xml", "tag": "OECD Education Papers" }
+    { "url": "http://export.arxiv.org/rss/cs.AI", "tag": "arXiv: AI" },
+    # Add your specific journal RSS feeds here
 ]
+
+# --- END USER CONFIGURATION ---
 
 def setup_gemini():
-    if not GEMINI_KEY: return None
-    genai.configure(api_key=GEMINI_KEY)
-    
-    # --- MODEL HUNTER ---
-    print("  [Setup] Hunting for valid Gemini models...")
+    """Robust connection logic that hunts for a working model version."""
+    if not GEMINI_KEY:
+        print("  [Setup Error] GEMINI_API_KEY is missing.")
+        return None
     try:
-        available_models = []
-        for m in genai.list_models():
-            if 'generateContent' in m.supported_generation_methods:
-                available_models.append(m.name)
-        priorities = ['gemini-1.5-flash', 'gemini-1.5-flash-001', 'gemini-1.5-flash-latest', 'gemini-1.5-pro', 'gemini-pro']
-        selected_model = None
-        for p in priorities:
-            for m in available_models:
-                if p in m:
-                    selected_model = m
-                    break
-            if selected_model: break
-        
-        if not selected_model and available_models: selected_model = available_models[0]
-        if not selected_model: selected_model = 'gemini-1.5-flash'
-        return genai.GenerativeModel(selected_model)
+        genai.configure(api_key=GEMINI_KEY)
+        candidates = [
+            "gemini-1.5-flash-001", "gemini-1.5-flash", "gemini-1.5-flash-002",
+            "gemini-1.5-pro", "gemini-pro"
+        ]
+        for model_name in candidates:
+            try:
+                model = genai.GenerativeModel(model_name)
+                model.generate_content("Test")
+                print(f"  [Setup] Success! Connected using: {model_name}")
+                return model
+            except Exception: continue
+        print("  [Setup Error] Could not connect to ANY Gemini model.")
+        return None
     except Exception as e:
-        print(f"  [Setup Error] Model listing failed: {e}")
-        return genai.GenerativeModel('gemini-1.5-flash')
-
-# --- LOGGING FUNCTION ---
-def log_operation(action, title, details, status):
-    file_exists = os.path.isfile(LOG_FILE)
-    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    with open(LOG_FILE, 'a', newline='', encoding='utf-8') as f:
-        writer = csv.writer(f)
-        if not file_exists:
-            writer.writerow(['Timestamp', 'Action', 'Status', 'Paper_Title', 'Prompt_Version', 'Model', 'Details'])
-        writer.writerow([timestamp, action, status, title, PROMPT_VERSION, CURRENT_MODEL, details])
+        print(f"  [Setup Error] Configuration failed: {e}")
+        return None
 
 def extract_text_from_pdf(pdf_path):
     try:
         reader = PdfReader(pdf_path)
         text = ""
-        for i in range(min(5, len(reader.pages))):
+        for i in range(min(10, len(reader.pages))): 
             text += reader.pages[i].extract_text() + "\n"
         return text
     except Exception as e:
         print(f"  [PDF Error] Could not read file: {e}")
         return None
 
+def clean_abstract(text):
+    if not text: return ""
+    text = re.sub('<[^<]+?>', '', text)
+    text = re.sub(r'http\S+', '', text)
+    text = re.sub(r'\[.*?\]', '', text)
+    text = re.sub(r'\s+', ' ', text)
+    return text.strip()
+
+def is_likely_duplicate(new_title, existing_titles, threshold=0.85):
+    new_clean = new_title.lower().strip()
+    for existing in existing_titles:
+        existing_clean = existing.lower().strip()
+        similarity = SequenceMatcher(None, new_clean, existing_clean).ratio()
+        if similarity > threshold:
+            return True, existing
+    return False, None
+
+def calculate_priority_score(paper_data):
+    score = 0
+    citations = paper_data.get('citationCount', 0)
+    if citations > 100: score += 40
+    elif citations > 50: score += 30
+    elif citations > 20: score += 20
+    
+    year = paper_data.get('year', 2000)
+    if year >= CURRENT_YEAR: score += 30
+    elif year >= CURRENT_YEAR - 2: score += 20
+    
+    title_lower = paper_data.get('title', '').lower()
+    abstract_lower = (paper_data.get('abstract') or '').lower()
+    combined_text = title_lower + " " + abstract_lower
+    
+    # Check against vocabulary
+    all_vocab = VOCAB_THEORY + VOCAB_CONTEXT
+    for term in all_vocab:
+        if term.lower() in combined_text: score += 5
+    return min(score, 100)
+
+def assign_priority_tier(score):
+    if score >= 70: return "Critical"
+    elif score >= 50: return "High"
+    elif score >= 30: return "Medium"
+    else: return "Low"
+
 def lookup_paper_details(item_data, pdf_text=None):
-    """
-    Used for Manual Import: Resolves URL/DOI to paper details.
-    """
     url = item_data.get('url', '')
     search_title = item_data['title']
     paper_id = None
-    
-    if "doi.org/" in url:
-        paper_id = "DOI:" + url.split("doi.org/")[1]
+    if "doi.org/" in url: paper_id = "DOI:" + url.split("doi.org/")[1]
     elif "semanticscholar.org/paper/" in url:
         match = re.search(r'paper/.*?/([a-f0-9]+)', url)
         if match: paper_id = match.group(1)
     
     if paper_id:
         api_url = f"https://api.semanticscholar.org/graph/v1/paper/{paper_id}"
-        params = {"fields": "title,abstract,authors,year,venue,externalIds,url,openAccessPdf,citationCount"}
+        params = {"fields": "title,abstract,authors,year,venue,externalIds,url,openAccessPdf,citationCount,paperId"}
         try:
             r = requests.get(api_url, params=params, timeout=10)
             if r.status_code == 200:
@@ -237,7 +163,7 @@ def lookup_paper_details(item_data, pdf_text=None):
     
     if search_title:
         search_url = "https://api.semanticscholar.org/graph/v1/paper/search"
-        params = {"query": search_title, "limit": 1, "fields": "title,abstract,authors,year,venue,externalIds,url,openAccessPdf,citationCount"}
+        params = {"query": search_title, "limit": 1, "fields": "title,abstract,authors,year,venue,externalIds,url,openAccessPdf,citationCount,paperId"}
         try:
             r = requests.get(search_url, params=params, timeout=10)
             if r.status_code == 200:
@@ -249,127 +175,94 @@ def lookup_paper_details(item_data, pdf_text=None):
                     return best_match
         except: pass
 
-    # PDF Fallback
-    if pdf_text:
-        return {'title': search_title, 'url': url, 'year': datetime.now().year, 'abstract': pdf_text}
-
+    if pdf_text: return {'title': search_title, 'url': url, 'year': datetime.now().year, 'abstract': pdf_text}
     return {'title': search_title, 'url': url, 'year': datetime.now().year, 'abstract': ""}
 
-def analyze_paper_with_ai(model, title, abstract, authors, year):
+def load_library_context(df, topic, limit=5):
+    if df is None or df.empty: return ""
+    topic_papers = df[df['Topic'].str.contains(topic, case=False, na=False)] if 'Topic' in df.columns else df
+    if topic_papers.empty: topic_papers = df
+    top_papers = topic_papers.nlargest(limit, 'Citations') if 'Citations' in topic_papers.columns else topic_papers.head(limit)
+    context = "EXISTING RESEARCH IN YOUR LIBRARY:\n"
+    for _, row in top_papers.iterrows():
+        context += f"- {row.get('Author', 'Unknown')} ({row.get('Year', 'N/A')}): {row.get('Title', 'Untitled')}\n"
+    return context
+
+def analyze_paper_with_ai(model, title, abstract, authors, year, library_context=""):
     if not model: return None
+    abstract = clean_abstract(abstract)
+    context_instruction = f"Source Text: {abstract[:20000]}"
+    if not abstract or len(abstract) < 100:
+        context_instruction = f"NOTE: No abstract provided. Summarize based on training data: '{title}' by {authors} ({year})."
 
-    # We format the vocab lists into strings for the prompt
-    theory_str = ", ".join(VOCAB_THEORY)
-    method_str = ", ".join(VOCAB_METHOD)
-    context_str = ", ".join(VOCAB_CONTEXT)
-    strategy_str = ", ".join(VOCAB_STRATEGY)
-    leadership_str = ", ".join(VOCAB_LEADERSHIP)
-
-    # Fallback Logic for empty abstract
-    context_instruction = f"Abstract/Context: {abstract}"
-    if not abstract or len(abstract) < 50:
-        context_instruction = f"NOTE: No abstract provided. Please summarize this paper based on your internal training data: '{title}' by {authors} ({year})."
-
+    rq_text = "\n".join([f"{i+1}. {q}" for i, q in enumerate(MY_RESEARCH_QUESTIONS)])
+    
+    # GENERIC PROMPT
     prompt = f"""
-    Act as a research assistant for me (Darice), a DBA student and Yale IT Leader.
-    Analyze the abstract/summary provided below for a newly discovered paper.
-    
+    Act as a research assistant.
+    {library_context}
+    NEW PAPER TO ANALYZE:
+    Title: {title}
+    Authors: {authors}
+    Year: {year}
     {context_instruction}
-    
-    Draft a "10-Point Reading Summary" based STRICTLY on the provided text.
-    
-    TONE & STYLE INSTRUCTIONS (DARICE'S VOICE):
-    1.  **Voice:** Write in the first person ('I', 'My'). Use a warm but grounded tone.
-    2.  **Style:** Keep sentences clean, steady, and direct. No fluff. No em dashes (use periods/commas).
-    3.  **Avoid:** Jargon, corporate speak, 'tech marketing' hype, overly poetic language.
-    4.  **Perspective:** Balance strategy with practical clarity.
-    
+    Draft a "10-Point Reading Summary".
+    TONE: Professional, academic, but concise.
     OUTPUT FORMAT:
-    
     <h3>1. Keywords</h3>
-    ... [Standard 10 points] ...
-    <h3>10. Next Steps</h3>
-    
+    ...
+    <h3>11. Alignment with Research</h3>
+    Rate relevance to the following questions (0-10):
+    {rq_text}
+    <h3>12. Connection to Existing Literature</h3>
     <h3>ANNOTATED BIBLIOGRAPHY ENTRY</h3>
-    [Write a single coherent paragraph of approx 150-200 words.
-    Structure:
-    - Sentences 1-2: Summarize the content/argument in plain English.
-    - Sentences 3-4: Assess the methodology and reliability critically.
-    - Sentences 5-6: Reflect on its relevance to IT Governance, AI, or Equity in Higher Ed using 'I' statements.]
-    
+    [150-200 words summary]
     <h3>DATA EXTRACTION</h3>
-    Setting: [Extract Country or Context (e.g., "USA", "UK", "Global", "Unknown")]
-    Tags: [Select relevant tags ONLY from lists below]
-    
-    THEORIES: {theory_str}
-    METHODS: {method_str}
-    CONTEXTS: {context_str}
-    STRATEGY: {strategy_str}
-    LEADERSHIP: {leadership_str}
+    Setting: [Context/Country]
+    Tags: [THEORIES, METHODS, CONTEXTS]
     """
-    
-    # Retry Logic for Rate Limits
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            response = model.generate_content(prompt)
-            return response.text
-        except Exception as e:
-            if "429" in str(e):
-                print(f"  [AI 429] Rate limit hit. Cooling down for 60s...")
-                time.sleep(60)
-            else:
-                print(f"  [AI Error] {e}")
-                return None
-    return None
+    try:
+        response = model.generate_content(prompt)
+        return response.text
+    except Exception as e:
+        if "429" in str(e):
+            time.sleep(60)
+            return None
+        print(f"  [AI Error] {e}")
+        return None
 
 def parse_ai_response(ai_text):
-    if not ai_text: return [], "", "Unknown", ""
-    
-    # --- CLEANUP FILLER ---
-    if "<h3>1. Keywords</h3>" in ai_text:
-        ai_text = ai_text[ai_text.find("<h3>1. Keywords</h3>"):]
-
-    # --- ENHANCE READABILITY ---
-    key_terms = VOCAB_THEORY + VOCAB_METHOD + VOCAB_CONTEXT + VOCAB_STRATEGY + VOCAB_LEADERSHIP
-    for term in key_terms:
-        ai_text = re.sub(f'(?<!<strong>){re.escape(term)}(?!</strong>)', f'<strong>{term}</strong>', ai_text, flags=re.IGNORECASE)
-
-    tags, setting, clean_note, annotated_bib = [], "Unknown", "", ""
+    if not ai_text: return [], "", "Unknown", "", 0
+    tags, setting, clean_note, annotated_bib, alignment_score = [], "Unknown", "", "", 0
+    if "<h3>1. Keywords</h3>" in ai_text: ai_text = ai_text[ai_text.find("<h3>1. Keywords</h3>"):]
     
     parts = ai_text.split("<h3>DATA EXTRACTION</h3>")
     main_content = parts[0]
     
-    # Extract Annotated Bib
+    if "<h3>11. Alignment with Research</h3>" in main_content:
+        alignment_section = main_content.split("<h3>11. Alignment with Research</h3>")[1].split("<h3>")[0]
+        scores = re.findall(r'(\d+)/10', alignment_section)
+        if scores: alignment_score = sum(int(s) for s in scores) / len(scores)
+    
     if "<h3>ANNOTATED BIBLIOGRAPHY ENTRY</h3>" in main_content:
         bib_parts = main_content.split("<h3>ANNOTATED BIBLIOGRAPHY ENTRY</h3>")
         clean_note = bib_parts[0]
         annotated_bib = bib_parts[1].replace("<p>", "").replace("</p>", "").strip()
-    else:
-        clean_note = main_content
-        
+    else: clean_note = main_content
+    
     if len(parts) > 1:
         data_section = parts[1]
         setting_match = re.search(r"Setting:\s*(.*)", data_section)
         if setting_match: setting = setting_match.group(1).strip().replace("[", "").replace("]", "")
-        all_vocab = VOCAB_THEORY + VOCAB_METHOD + VOCAB_CONTEXT + VOCAB_STRATEGY + VOCAB_LEADERSHIP
+        all_vocab = VOCAB_THEORY + VOCAB_METHOD + VOCAB_CONTEXT
         for vocab_word in all_vocab:
             if vocab_word in data_section: tags.append(vocab_word)
             
-    return tags, clean_note, setting, annotated_bib
-
-def format_abstract_for_readability(text):
-    if not text: return ""
-    headers = ["Background:", "Methods:", "Results:", "Conclusion:", "Objective:", "Discussion:", "Findings:"]
-    formatted = text
-    for h in headers:
-        formatted = formatted.replace(h, f"\n\n{h}")
-        formatted = formatted.replace(h.lower(), f"\n\n{h}") 
-    return formatted.strip()
+    return tags, clean_note, setting, annotated_bib, alignment_score
 
 def search_semantic_scholar(query_text):
     url = "https://api.semanticscholar.org/graph/v1/paper/search"
-    params = {"query": query_text, "year": YEAR_RANGE, "limit": 10, "fields": "title,abstract,authors,year,venue,externalIds,url,openAccessPdf,citationCount"}
+    params = {"query": query_text, "year": YEAR_RANGE, "limit": 10, "fields": "title,abstract,authors,year,venue,externalIds,url,openAccessPdf,citationCount,paperId"}
     try:
         time.sleep(1)
         r = requests.get(url, params=params, timeout=10)
@@ -384,35 +277,18 @@ def fetch_rss_feed(feed_url):
         for entry in feed.entries[:3]:
             title = entry.get('title', '')
             if any(x in title.lower() for x in NOISE_BLOCKLIST): continue
-
-            pub_year = CURRENT_YEAR
-            if hasattr(entry, 'published_parsed'):
-                pub_year = entry.published_parsed.tm_year
-            
-            summary_text = getattr(entry, 'summary', '')
-            description_text = getattr(entry, 'description', '')
-            abstract = summary_text if len(summary_text) > len(description_text) else description_text
-            
-            abstract = re.sub('<[^<]+?>', '', abstract)
-            abstract = re.sub(r'\s+', ' ', abstract).strip()
-            abstract = abstract[:1500] 
-
-            normalized_entries.append({
-                'title': title, 'abstract': abstract, 'year': pub_year, 'url': entry.link,
-                'citationCount': 0, 'authors': [{'name': getattr(entry, 'author', 'EDUCAUSE')}],
-                'is_industry_report': True
-            })
+            pub_year = entry.published_parsed.tm_year if hasattr(entry, 'published_parsed') else CURRENT_YEAR
+            abstract = clean_abstract(getattr(entry, 'summary', getattr(entry, 'description', '')))[:1500]
+            normalized_entries.append({'title': title, 'abstract': abstract, 'year': pub_year, 'url': entry.link, 'citationCount': 0, 'authors': [{'name': getattr(entry, 'author', 'RSS Feed')}], 'is_industry_report': True})
         return normalized_entries
-    except Exception as e:
-        print(f"  [RSS Error] {e}")
-        return []
+    except: return []
 
 def get_sliding_scale_rules(paper_year):
     try: p_year = int(paper_year)
     except: return (0, "Unknown Year")
     if p_year >= CURRENT_YEAR: return (0, "🔥 Trending (New)")
-    elif p_year == CURRENT_YEAR - 1: return (15, "⭐ Proven (Recent)")
-    else: return (50, "🏆 High Impact")
+    elif p_year == CURRENT_YEAR - 1: return (15, "💎 Proven (Recent)")
+    else: return (50, "🏛️ High Impact")
 
 def load_zotero_titles(zot):
     print("  [Memory] Creating local map of existing library...")
@@ -429,226 +305,107 @@ def load_zotero_titles(zot):
 def save_matrix_csv(items, existing_df=None):
     data_for_csv = []
     for item in items:
-        citations, year, title, topic, url, smart_tag, ai_note, author, setting = item
-        data_for_csv.append({
-            "Year": year, "Author": author, "Title": title, "Topic": topic,
-            "Setting": setting, "Citations": citations, "URL": url,
-            "Tag": smart_tag, "AI_Note": ai_note
-        })
+        citations, year, title, topic, url, smart_tag, ai_note, author, setting, priority, alignment = item
+        data_for_csv.append({"Year": year, "Author": author, "Title": title, "Topic": topic, "Setting": setting, "Citations": citations, "URL": url, "Tag": smart_tag, "AI_Note": ai_note, "Priority": priority, "Alignment_Score": alignment})
     new_df = pd.DataFrame(data_for_csv)
-    if existing_df is not None and not existing_df.empty:
-        final_df = pd.concat([existing_df, new_df]).drop_duplicates(subset=['Title'], keep='last')
-    else: final_df = new_df
+    final_df = pd.concat([existing_df, new_df]).drop_duplicates(subset=['Title'], keep='last') if existing_df is not None and not existing_df.empty else new_df
     final_df.to_csv("literature_matrix.csv", index=False)
     print("  [Matrix Saved] literature_matrix.csv updated.")
-
-def save_summary_file(year, title, note_content, bib_content):
-    os.makedirs("summaries", exist_ok=True)
-    safe_title = re.sub(r'[\\/*?:"<>|]', "", title)
-    filename = f"summaries/{year} - {safe_title}.md"
-    md_content = note_content.replace("<h3>", "### ").replace("</h3>", "\n").replace("<p>", "").replace("</p>", "\n\n").replace("<b>", "**").replace("</b>", "**").replace("<br>", "\n")
-    with open(filename, "w", encoding="utf-8") as f:
-        f.write(f"# {title}\n\n")
-        f.write("## Annotated Bibliography Entry\n")
-        f.write(bib_content + "\n\n")
-        f.write("## 10-Point Summary\n")
-        f.write(md_content)
-    print(f"  [File Saved] {filename}")
 
 def update_readme_dashboard(items):
     filename = "LAST_RUN_LOG.md" 
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M')
     with open(filename, "w", encoding='utf-8') as f:
-        f.write(f"# 📊 Weekly AI-Analyst Log\n**Run Date:** {timestamp} UTC\n\n")
+        f.write(f"# 📊 Research Ops Log\n**Run Date:** {timestamp}\n\n")
         if not items: f.write(f"No new papers added this run.\n")
         else:
-            f.write(f"Processed **{len(items)}** new papers:\n\n| Citations | Type | Topic | Title |\n| :---: | :--- | :--- | :--- |\n")
+            f.write(f"Processed **{len(items)}** new papers:\n\n| Priority | Citations | Type | Topic | Title |\n| :---: | :---: | :--- | :--- | :--- |\n")
             for item in items:
-                citations, year, title, topic, url, smart_tag, ai_note, author, setting = item
-                title_display = f"[{title}]({url})" if url else title
-                icon = "📄"
-                if "Trending" in smart_tag: icon = "🔥"
-                if "Proven" in smart_tag: icon = "⭐"
-                f.write(f"| {citations} | {icon} | {topic} | {title_display} |\n")
+                citations, year, title, topic, url, smart_tag, ai_note, author, setting, priority, alignment = item
+                f.write(f"| {priority} | {citations} | 📄 | {topic} | [{title}]({url}) |\n")
     print(f"  [Log Updated]")
-
-# --- SHARED PROCESS FUNCTION (The Engine) ---
-def process_batch(papers, zot, ai_model, tag_name, report_data, zotero_memory, is_academic, is_manual=False):
-    for paper in papers:
-        title = paper.get('title', 'No Title')
-        
-        # Check Dupes (Skip if already in library, UNLESS it's a Manual Force Import)
-        if title.lower().strip() in zotero_memory and not is_manual: 
-            continue
-
-        citations = paper.get('citationCount', 0)
-        p_year = paper.get('year', CURRENT_YEAR)
-        
-        # Clean Abstract text
-        abstract = paper.get('abstract', '')
-        if abstract:
-            abstract = format_abstract_for_readability(abstract)
-        
-        # Author Parsing
-        author_str = "Unknown"
-        if paper.get('authors'):
-            try:
-                zotero_creators = []
-                for auth in paper['authors']:
-                    if 'name' in auth:
-                        name_parts = auth['name'].split()
-                        if len(name_parts) > 1:
-                            last = name_parts[-1]
-                            first = " ".join(name_parts[:-1])
-                            zotero_creators.append({'creatorType': 'author', 'firstName': first, 'lastName': last})
-                        else:
-                            zotero_creators.append({'creatorType': 'author', 'firstName': '', 'lastName': auth['name']})
-                author_str = ", ".join([a['name'] for a in paper['authors'][:3]])
-                if len(paper['authors']) > 3: author_str += " et al."
-            except:
-                zotero_creators = [{'creatorType': 'author', 'firstName': '', 'lastName': 'Unknown'}]
-        else:
-             zotero_creators = [{'creatorType': 'author', 'firstName': '', 'lastName': 'Unknown'}]
-
-        # FILTERING: Apply Sliding Scale only if Academic & Not Manual
-        if is_academic and not is_manual:
-            required_citations, smart_tag = get_sliding_scale_rules(p_year)
-            if citations < required_citations: 
-                log_operation("Filter Impact", title, f"Cites: {citations} < {required_citations}", "Filtered")
-                continue
-        elif is_manual:
-            smart_tag = "📌 Manual Import"
-        else:
-            smart_tag = "📢 Industry Insight"
-
-        ai_tags, ai_note_content, setting, annotated_bib = [], "", "Unknown", ""
-        
-        # AI ANALYSIS (Permissive Mode for Manual)
-        if ai_model:
-            print(f"  [AI] Drafting Note: {title[:30]}...")
-            ai_text = analyze_paper_with_ai(ai_model, title, abstract, author_str, p_year)
-            ai_tags, ai_note_content, setting, annotated_bib = parse_ai_response(ai_text)
-            
-            # STRICT MODE: If AI fails, skip (unless manual)
-            if not ai_note_content and not is_manual:
-                print(f"  [Skipped] AI Analysis failed for: {title[:30]}")
-                continue
-            elif not ai_note_content and is_manual:
-                print(f"  [Warning] AI failed, but saving Manual Import anyway.")
-                ai_note_content = "<h3>Manual Entry Required</h3><p>AI failed. Please fill manually.</p>"
-            
-            time.sleep(1)
-
-        template = zot.item_template('journalArticle' if is_academic else 'webpage')
-        template['title'] = title
-        template['abstractNote'] = abstract
-        template['date'] = str(p_year)
-        template['extra'] = f"Citations: {citations}"
-        
-        # SAVE ANNOTATION TO EXTRA FOR CSL
-        if annotated_bib:
-            template['extra'] += f"\n\n{annotated_bib}"
-        
-        template['url'] = paper.get('url', '')
-        if paper.get('venue'): template['publicationTitle'] = paper['venue']
-        elif is_academic: template['publicationTitle'] = "Semantic Scholar"
-        
-        template['creators'] = zotero_creators
-        
-        tag_list = [{'tag': '_NEW_ARRIVAL'}, {'tag': smart_tag}, {'tag': TODAY_TAG}, {'tag': tag_name}]
-        for t in ai_tags: tag_list.append({'tag': f"#{t}"})
-        template['tags'] = tag_list
-
-        try:
-            resp = zot.create_items([template])
-            if resp and 'successful' in resp:
-                print(f"  [Success] Added: {title[:20]}...")
-                log_operation("Import", title, f"Source: {tag_name}", "Success")
-
-                parent_key = resp['successful']['0']['key']
-                if ai_note_content:
-                    # Note 1: 10-Point Summary
-                    note_template = zot.item_template('note')
-                    note_template['parentItem'] = parent_key
-                    note_template['note'] = ai_note_content
-                    note_template['tags'] = [{'tag': '10-Point-Draft'}]
-                    zot.create_items([note_template])
-                    
-                    # Note 2: Annotated Bib (Separate note)
-                    if annotated_bib:
-                        bib_note = zot.item_template('note')
-                        bib_note['parentItem'] = parent_key
-                        # FIX: Unique title for Word plugin search
-                        bib_note['note'] = f"<h3>Annotated Bib: {author_str} ({p_year})</h3><p>{annotated_bib}</p>"
-                        bib_note['tags'] = [{'tag': 'Annotated Bib'}]
-                        zot.create_items([bib_note])
-                
-                report_data.append((citations, p_year, title, tag_name, template['url'], smart_tag, ai_note_content, author_str, setting))
-                zotero_memory.add(title.lower().strip())
-        except Exception as e: 
-            print(f"  [Upload Error] {e}")
-            log_operation("Zotero Upload", title, str(e), "Error")
 
 def process_searches():
     if not LIBRARY_ID or not API_KEY: return
     zot = zotero.Zotero(LIBRARY_ID, LIBRARY_TYPE, API_KEY)
     ai_model = setup_gemini()
     report_data = []
-    
     zotero_memory = load_zotero_titles(zot)
-    existing_df = None
-    if os.path.exists("literature_matrix.csv"):
-        try: existing_df = pd.read_csv("literature_matrix.csv")
-        except: pass
-        if existing_df is not None and not existing_df.empty:
-            for t in existing_df['Title']: 
-                if pd.notna(t): zotero_memory.add(str(t).lower().strip())
+    existing_df = pd.read_csv("literature_matrix.csv") if os.path.exists("literature_matrix.csv") else None
+    if existing_df is not None:
+        for t in existing_df['Title']: 
+            if pd.notna(t): zotero_memory.add(str(t).lower().strip())
 
-    print(f"Starting Analyst Engine. Batch: {TODAY_TAG}")
+    print(f"Starting Enhanced Analyst Engine. Batch: {TODAY_TAG}")
 
-    # --- PROCESS 0: MANUAL IMPORT LIST (Prioritize this!) ---
-    # First, convert TARGET_DATA URLs into paper objects
     manual_papers = []
-    
-    # Check manual_pdfs folder first
     if os.path.exists("manual_pdfs"):
-        pdf_files = glob.glob("manual_pdfs/*.pdf")
-        for pdf in pdf_files:
-             clean_title = os.path.splitext(os.path.basename(pdf))[0]
-             # Reuse lookup logic from manual_import (simplified here for integration)
-             pdf_text = extract_text_from_pdf(pdf)
-             manual_papers.append(lookup_paper_details({'title': clean_title, 'url': ''}, pdf_text))
-
-    # Check URL list
-    for item in TARGET_DATA:
-        paper = lookup_paper_details(item) # Reusing helper to fetch API data
-        manual_papers.append(paper)
+        for pdf in glob.glob("manual_pdfs/*.pdf"):
+             manual_papers.append(lookup_paper_details({'title': os.path.splitext(os.path.basename(pdf))[0], 'url': ''}, extract_text_from_pdf(pdf)))
     
-    if manual_papers:
-        print(f"\nProcessing {len(manual_papers)} Manual Items...")
-        process_batch(manual_papers, zot, ai_model, "Manual Import", report_data, zotero_memory, is_academic=True, is_manual=True)
+    if manual_papers: process_batch(manual_papers, zot, ai_model, "Manual Import", report_data, zotero_memory, existing_df, is_academic=True, is_manual=True)
 
-
-    # --- PROCESS 1: ACADEMIC PAPERS ---
     for search in SEARCH_QUERIES:
-        query = search['query']
-        tag_name = search['tag']
-        print(f"\nSearching (Academic): '{query}'...")
-        papers = search_semantic_scholar(query)
-        if not papers: continue
-        
-        process_batch(papers, zot, ai_model, tag_name, report_data, zotero_memory, is_academic=True)
+        papers = search_semantic_scholar(search['query'])
+        if papers: process_batch(papers, zot, ai_model, search['tag'], report_data, zotero_memory, existing_df, is_academic=True)
 
-    # --- PROCESS 2: INDUSTRY FEEDS (RSS) ---
     for feed in RSS_FEEDS:
-        url = feed['url']
-        tag_name = feed['tag']
-        papers = fetch_rss_feed(url)
-        if not papers: continue
-        process_batch(papers, zot, ai_model, tag_name, report_data, zotero_memory, is_academic=False)
+        papers = fetch_rss_feed(feed['url'])
+        if papers: process_batch(papers, zot, ai_model, feed['tag'], report_data, zotero_memory, existing_df, is_academic=False)
 
     update_readme_dashboard(report_data)
     save_matrix_csv(report_data, existing_df)
+
+def process_batch(papers, zot, ai_model, tag_name, report_data, zotero_memory, existing_df, is_academic, is_manual=False):
+    for paper in papers:
+        title = paper.get('title', 'No Title')
+        is_dup, _ = is_likely_duplicate(title, zotero_memory)
+        if is_dup and not is_manual: continue
+
+        citations = paper.get('citationCount', 0)
+        p_year = paper.get('year', CURRENT_YEAR)
+        priority_score = calculate_priority_score(paper)
+        priority_tier = assign_priority_tier(priority_score)
+
+        if is_academic and not is_manual:
+            required_citations, smart_tag = get_sliding_scale_rules(p_year)
+            if citations < required_citations: continue
+        elif is_manual: smart_tag = "📥 Manual Import"
+        else: smart_tag = "🌐 Industry Insight"
+
+        library_context = load_library_context(existing_df, tag_name)
+        ai_tags, ai_note_content, setting, annotated_bib, alignment_score = [], "", "Unknown", "", 0
+        
+        if ai_model:
+            print(f"  [AI] Analyzing: {title[:30]}...")
+            ai_text = analyze_paper_with_ai(ai_model, title, paper.get('abstract', ''), "Unknown", p_year, library_context)
+            ai_tags, ai_note_content, setting, annotated_bib, alignment_score = parse_ai_response(ai_text)
+            if not ai_note_content and not is_manual: continue
+            time.sleep(1)
+
+        template = zot.item_template('journalArticle' if is_academic else 'webpage')
+        template['title'] = title
+        template['abstractNote'] = paper.get('abstract', '')
+        template['date'] = str(p_year)
+        template['extra'] = f"Citations: {citations}\nPriority: {priority_tier} ({priority_score}/100)\nAlignment Score: {alignment_score:.1f}/10"
+        if annotated_bib: template['extra'] += f"\n\nAnnotation:\n{annotated_bib}"
+        template['url'] = paper.get('url', '')
+        template['publicationTitle'] = paper.get('venue', 'Semantic Scholar')
+        template['creators'] = [{'creatorType': 'author', 'firstName': '', 'lastName': 'Unknown'}] 
+        template['tags'] = [{'tag': '_NEW_ARRIVAL'}, {'tag': smart_tag}, {'tag': TODAY_TAG}, {'tag': tag_name}, {'tag': f'Priority: {priority_tier}'}]
+        for t in ai_tags: template['tags'].append({'tag': f"#{t}"})
+
+        try:
+            resp = zot.create_items([template])
+            if resp and 'successful' in resp:
+                print(f"  [Success] Added [{priority_tier}]: {title[:20]}...")
+                parent_key = resp['successful']['0']['key']
+                if ai_note_content:
+                    zot.create_items([{'parentItem': parent_key, 'itemType': 'note', 'note': ai_note_content, 'tags': [{'tag': '10-Point-Draft'}]}])
+                report_data.append((citations, p_year, title, tag_name, template['url'], smart_tag, ai_note_content, "Unknown", setting, priority_tier, alignment_score))
+                zotero_memory.add(title.lower().strip())
+        except Exception as e: 
+            print(f"  [Upload Error] {e}")
 
 if __name__ == "__main__":
     process_searches()
