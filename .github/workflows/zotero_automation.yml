@@ -1,8 +1,10 @@
-name: Weekly Zotero Sync
+name: Weekly Research Sync
 
 on:
   schedule:
-    - cron: '0 8 * * 1' # Runs at 08:00 UTC (3:00 AM EST) every Monday
+    # USER: Update this cron schedule to your preferred time.
+    # Current: Runs at 08:00 UTC every Monday.
+    - cron: '0 8 * * 1' 
   workflow_dispatch: # Allows manual trigger for testing
 
 # Grant permission to write files back to the repo
@@ -20,16 +22,16 @@ jobs:
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
-        python-version: '3.11' # Using 3.11 to support latest Google AI features
+        python-version: '3.11'
 
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
-        # We don't need explicit pyarrow install here as it is now in requirements.txt
+        pip install pyarrow 
+        pip install pyvis
 
     # Step 1: Run the Collector & Analyst
-    # Finds papers, adds 10-pt summaries to Zotero, saves individual MD files, builds Matrix
     - name: Run Scholar Sync
       env:
         ZOTERO_USER_ID: ${{ secrets.ZOTERO_USER_ID }}
@@ -37,30 +39,58 @@ jobs:
         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       run: python scholar_sync.py
 
-    # Step 2: Run the Synthesizer (The Dissertation Drafter)
-    # Reads the Matrix and writes the comparative narrative
+    # Step 2: Run the Synthesizer
     - name: Run Synthesizer
       env:
         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       run: python synthesize.py
 
-    # Step 3: Upload Reports to Dropbox
-    # Saves the Synthesis, Executive Brief, and Deep Dives to your Dropbox folder
-    - name: Upload Reports to Dropbox
+    # Step 3: Run the Gap Hunter
+    - name: Run Gap Hunter
+      run: python gap_hunter.py
+
+    # Step 4: Metadata Cleanup (Fix Manual Imports)
+    - name: Run Metadata Cleanup
+      env:
+        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      run: python fix_metadata.py
+       
+    # Step 5: Run Visualizer
+    - name: Build Knowledge Graph
+      run: python visualize_library.py
+
+    # Step 6: Upload to Dropbox
+    - name: Upload to Dropbox
       env:
         DROPBOX_APP_KEY: ${{ secrets.DROPBOX_APP_KEY }}
         DROPBOX_APP_SECRET: ${{ secrets.DROPBOX_APP_SECRET }}
         DROPBOX_REFRESH_TOKEN: ${{ secrets.DROPBOX_REFRESH_TOKEN }}
       run: python dropbox_sync.py
 
-    # Step 4: Save all the new files to GitHub
-    # We use 'git add .' to safely add everything that changed without erroring on missing files
-    - name: Commit Dashboard and Matrix
+    # Step 7: Save to GitHub
+    # We Add and Commit FIRST to clear the "unstaged changes" error.
+    # THEN we pull and push.
+    - name: Commit Dashboard
       run: |
-        git config --global user.name 'Zotero Bot'
+        git config --global user.name 'Research Bot'
         git config --global user.email 'actions@github.com'
+        
+        # 1. STAGE EVERYTHING
         git add .
+        
+        # 2. COMMIT
+        # This makes the directory "clean" so rebase works
         git commit -m "Weekly Synthesis Update" || echo "No changes to commit"
-        # FIX: Pull latest changes from the web (rebase) before pushing to avoid conflicts
+        
+        # 3. PULL (Check for updates from the cloud)
         git pull --rebase origin main
-        git push
+        
+        # 4. PUSH WITH RETRY
+        n=0
+        until [ "$n" -ge 3 ]
+        do
+           git push && break
+           n=$((n+1))
+           echo "Push failed. Retrying in 15 seconds... (Attempt $n/3)"
+           sleep 15
+        done
