@@ -1,220 +1,390 @@
 import os
 import pandas as pd
-import google.generativeai as genai
 import datetime
-from collections import Counter
+import time
+import re
+import google.generativeai as genai
+from zoneinfo import ZoneInfo 
 
 # --- CONFIGURATION ---
 GEMINI_KEY = os.environ.get('GEMINI_API_KEY')
+TIMEZONE = "America/New_York" # Change to your local timezone
+
+# --- PERSONA & CONTEXT ---
+# Update this string to match your professional role and style
+PERSONA = """
+CORE CONTEXT:
+I am [YOUR_NAME], [YOUR_ROLE] at [YOUR_ORG].
+You are my executive research assistant.
+
+STRICT STYLE GUIDE (AGGRESSIVE SIMPLIFICATION):
+1. **NO FLUFF:** Delete words like "It is important to note," "Furthermore," "In conclusion."
+2. **ACTIVE VOICE:** Say "AI changes governance," not "Governance is changed by AI."
+3. **SCANNABLE:** Use Emojis as visual anchors. Use bolding for key terms.
+4. **SIMPLE:** Write at an 8th-grade reading level. No academic jargon.
+"""
 
 def setup_gemini():
+    """Dynamically asks Google for available models to avoid 404s."""
     if not GEMINI_KEY:
         print("Error: Missing Gemini Key.")
         return None
-    
-    genai.configure(api_key=GEMINI_KEY)
-    
-    # --- MODEL HUNTER ---
-    # Dynamically find a working model to prevent 404 errors
-    print("  [Setup] Hunting for valid Gemini models...")
     try:
+        # Use REST to avoid GitHub blocking gRPC
+        genai.configure(api_key=GEMINI_KEY, transport="rest")
+        
+        print("  [Setup] Asking Google for available models...")
         available_models = []
-        for m in genai.list_models():
-            if 'generateContent' in m.supported_generation_methods:
-                available_models.append(m.name)
         
-        priorities = ['gemini-1.5-flash', 'gemini-1.5-flash-001', 'gemini-1.5-flash-latest', 'gemini-1.5-pro', 'gemini-pro']
-        selected_model = None
-        
-        for p in priorities:
-            for m in available_models:
-                if p in m:
-                    selected_model = m
-                    break
-            if selected_model:
-                break
-        
-        if not selected_model and available_models:
-            selected_model = available_models[0]
-
-        if not selected_model:
-            print("  [Setup Warning] Could not list models. Forcing 'gemini-1.5-flash'.")
-            selected_model = 'gemini-1.5-flash'
-
-        print(f"  [Setup] Locking in model: {selected_model}")
-        return genai.GenerativeModel(selected_model)
-            
-    except Exception as e:
-        print(f"  [Setup Error] Model listing failed: {e}")
-        return genai.GenerativeModel('gemini-1.5-flash')
-
-def load_weekly_data():
-    """
-    Reads the literature_matrix.csv.
-    """
-    try:
-        if not os.path.exists('literature_matrix.csv'):
-            print("No matrix file found. Running synthesis on empty data.")
+        # 1. Ask API what is available
+        try:
+            for m in genai.list_models():
+                if 'generateContent' in m.supported_generation_methods:
+                    available_models.append(m.name)
+        except Exception as e:
+            print(f"  [Setup Error] Could not list models (API likely not enabled): {e}")
             return None
+
+        if not available_models:
+            print("  [Setup Error] API Key is valid, but no models are available.")
+            print("  ACTION REQUIRED: Go to Google Cloud Console -> Enable 'Generative Language API'.")
+            return None
+
+        # 2. Pick the best one (Prioritize Flash > Pro > Standard)
+        preferred_order = [
+            'models/gemini-1.5-flash',
+            'models/gemini-1.5-pro',
+            'models/gemini-pro'
+        ]
+        
+        selected_model = available_models[0] # Default to the first one found
+        
+        # Try to find a preferred one
+        for pref in preferred_order:
+            for avail in available_models:
+                if pref in avail:
+                    selected_model = avail
+                    break
+            else:
+                continue
+            break
+            
+        print(f"  [Setup] SUCCESS! Auto-selected model: {selected_model}")
+        return genai.GenerativeModel(selected_model)
+
+    except Exception as e:
+        print(f"  [Setup Error] Configuration failed: {e}")
+        return None
+
+def load_matrix_data():
+    try:
+        if not os.path.exists('literature_matrix.csv'): return None
         df = pd.read_csv('literature_matrix.csv')
+        
+        if 'Priority' not in df.columns: df['Priority'] = 'Medium'
+        df['Priority'] = df['Priority'].fillna('Medium').astype(str)
+        df['Title'] = df['Title'].fillna('Untitled')
+        df['Topic'] = df['Topic'].fillna('Uncategorized')
+        df['URL'] = df['URL'].fillna('#') 
+        df['Author'] = df['Author'].fillna('Unknown Author')
+        df['Year'] = df['Year'].fillna('n.d.')
+        
+        if 'Alignment_Score' in df.columns:
+            df['Alignment_Score'] = pd.to_numeric(df['Alignment_Score'], errors='coerce').fillna(0)
+            
         return df
     except Exception as e:
-        print(f"Error reading matrix: {e}")
+        print(f"Error loading CSV: {e}")
         return None
 
 def clean_html_note(raw_note):
-    """Helper to strip HTML for the AI prompt to save tokens."""
-    if pd.isna(raw_note) or str(raw_note) == 'nan':
-        return "No summary available."
+    if pd.isna(raw_note) or str(raw_note) == 'nan': return "No summary."
     return str(raw_note).replace('<h3>', '**').replace('</h3>', '**').replace('<p>', '').replace('</p>', '\n')
 
-def generate_synthesis(model, df):
-    """
-    Feeds the batch of papers to Gemini for a narrative synthesis (Academic).
-    """
-    papers_text = ""
-    # Process top 15 rows (The "News")
-    for index, row in df.head(15).iterrows():
-        author = row.get('Author', 'Unknown Authors')
-        if pd.isna(author): author = "Unknown Authors"
-        
-        note = clean_html_note(row.get('AI_Note', ''))
-        
-        papers_text += f"\n--- SOURCE: '{row['Title']}' by {author} ({row['Year']}) ---\nTopic: {row['Topic']}\nSetting: {row.get('Setting', 'Unknown')}\nSummary Data: {note[:1000]}\n"
+def append_bibliography(df_subset):
+    if df_subset is None or df_subset.empty: return ""
+    bib = "\n\n---\n### 📚 References\n"
+    for index, row in df_subset.iterrows():
+        title = str(row.get('Title', 'Untitled')).strip()
+        url = str(row.get('URL', '#')).strip()
+        author = str(row.get('Author', 'Unknown Author')).strip()
+        year = str(row.get('Year', 'n.d.')).replace('.0', '') 
+        bib += f"* {author}. ({year}). *{title}*. {url}\n"
+    return bib
 
-    prompt = f"""
-    Act as a DBA doctoral candidate. I have processed a batch of {len(df)} new academic papers this week.
-    
-    Here is the data for the papers:
-    {papers_text}
-    
-    TASK:
-    Write a "Weekly Synthesis" document (approx 400 words) in Markdown.
-    
-    CRITICAL CITATION RULES:
-    1. **ALWAYS** refer to papers by **Author (Year)** format. (e.g. "Smith et al. (2025) argue that...", "Jones (2024) presents a case study...")
-    2. If the author is unknown, use the Title.
-    3. **NEVER** use generic labels like "Paper 1".
-    
-    STRUCTURE:
-    1. **Executive Summary**: One paragraph relating the dominant theme of this batch to "IT Governance in Higher Ed".
-    2. **Comparative Analysis**: Connect the papers. (e.g., "While Smith (2025) focuses on X, Jones (2024) contrasts this by..."). Group them by methodology or theory if possible.
-    3. **Implications for Yale**: A brief bulleted list of how these findings might apply to IT leadership at a large institution.
-    """
-    
+def run_ai_generation(model, prompt, report_name):
+    print(f"  > Generating {report_name}...")
     try:
+        time.sleep(1)
         response = model.generate_content(prompt)
         return response.text
     except Exception as e:
-        print(f"AI Error: {e}")
-        return "Could not generate synthesis."
+        print(f"    ERROR generating {report_name}: {e}")
+        return f"FAILED to generate {report_name}. Error: {str(e)}"
+
+# --- REPORT GENERATORS ---
+
+def generate_linkedin_post(model, df):
+    if 'Alignment_Score' in df.columns: top_papers = df.nlargest(3, 'Alignment_Score')
+    else: top_papers = df.tail(3)
+    papers_text = "\n".join([f"- {row['Title']} ({row['Topic']})" for i, row in top_papers.iterrows()])
+    prompt = f"""{PERSONA}
+    TASK: Write a LinkedIn post sharing a key insight from my research this week.
+    Input Data: {papers_text}
+    FORMAT:
+    - **Hook:** 1 catchy sentence.
+    - **Body:** 3 short sentences on what I learned.
+    - **Call to Action:** A question to my network.
+    - **Hashtags:** #Research #Innovation #[YOUR_FIELD]
+    """
+    return run_ai_generation(model, prompt, "LinkedIn Post") + append_bibliography(top_papers)
+
+def generate_devils_advocate(model, df):
+    target_df = df[df['Priority'].str.contains('Critical|High', case=False, na=False)].tail(5)
+    if target_df.empty: 
+        print("    (No Critical papers found. Analyzing random recent papers.)")
+        target_df = df.tail(5)
+    papers_text = "\n".join([f"- {row['Title']} ({row['Year']})" for i, row in target_df.iterrows()])
+    prompt = f"""{PERSONA}
+    TASK: Act as a harsh Critic. Critique my recent sources.
+    Input Data: {papers_text}
+    FORMAT:
+    ### 🧐 Methodological Weaknesses
+    - Are these papers too old? Biased? 
+    - (Critique in 2 bullets).
+    ### ⚠️ Theoretical Blindspots
+    - What theories are these papers ignoring?
+    ### 🛡️ Defense Prep
+    - "How would you defend using [Paper X] given its limitations?"
+    """
+    return run_ai_generation(model, prompt, "The Critic") + append_bibliography(target_df)
+
+def generate_synthesis(model, df):
+    priority_papers = df.tail(15)
+    if 'Priority' in df.columns:
+        priority_papers = df[df['Priority'].str.contains('Critical|High', case=False, na=False)].tail(15)
+        if priority_papers.empty: priority_papers = df.tail(15)
+    papers_text = "\n".join([f"- {row['Title']} ({row['Year']}): {clean_html_note(row.get('AI_Note', ''))[:500]}\n" for i, row in priority_papers.iterrows()])
+    prompt = f"""{PERSONA}
+    TASK: Write a 'Weekly Synthesis'.
+    Input Data: {papers_text}
+    FORMAT:
+    1. **🚨 BLUF (Bottom Line Up Front):** 1 sentence summary.
+    2. **🔑 Key Themes:**
+       - **Theme Name:** 2 bullet points max.
+    3. **🎓 Research Impact:** 1 sentence.
+    """
+    return run_ai_generation(model, prompt, "Weekly Synthesis") + append_bibliography(priority_papers)
+
+def generate_practitioner_toolkit(model, df):
+    relevant_df = df.tail(20)
+    papers_text = "\n".join([f"- {row['Title']}: {clean_html_note(row.get('AI_Note', ''))[:300]}" for i, row in relevant_df.iterrows()])
+    prompt = f"""{PERSONA}
+    TASK: Create a 'Practitioner Toolkit'.
+    Input Data: {papers_text}
+    FORMAT:
+    ### 🗣️ Talking Points
+    - (Max 15 words per bullet)
+    ### ⚠️ Emerging Risks
+    - (Max 15 words per bullet)
+    ### ✅ Monday Actions
+    - (Simple verbs)
+    """
+    return run_ai_generation(model, prompt, "Practitioner Toolkit") + append_bibliography(relevant_df)
 
 def generate_executive_brief(model, df):
+    target_df = df.tail(10)
+    papers_text = "\n".join([f"- {row['Title']}" for i, row in target_df.iterrows()])
+    prompt = f"""{PERSONA}
+    TASK: Write a 1-page Strategic Memo.
+    Input Data: {papers_text}
+    FORMAT:
+    **To:** [LEADERSHIP ROLE] | **From:** [YOUR NAME]
+    **🎯 The Headline:** (1 sentence)
+    **💡 Strategic Insights:** (Bullet points)
+    **📉 Recommendation:** (1 sentence).
     """
-    Generates a practical, non-academic memo for a CIO/IT Leader audience.
-    """
-    papers_text = ""
-    for index, row in df.head(10).iterrows():
-        author = row.get('Author', 'Unknown')
-        title = row.get('Title', 'Unknown')
-        setting = row.get('Setting', 'Unknown')
-        papers_text += f"- {title} ({author}) - Context: {setting}\n"
+    return run_ai_generation(model, prompt, "Executive Brief") + append_bibliography(target_df)
 
-    prompt = f"""
-    Act as a Chief Strategy Officer at a large university (like Yale).
-    Review this list of new research papers:
-    {papers_text}
-    
-    TASK:
-    Write a 1-page "Strategic Intelligence Memo" to the CIO.
-    
-    TONE: Professional, concise, actionable. No academic jargon.
-    
-    STRUCTURE:
-    1. **Headline**: The single biggest trend this week.
-    2. **Strategic Risks**: What should we be worried about? (e.g. Integrity, Bias, Resistance).
-    3. **Opportunities**: Where can we innovate?
-    4. **Recommended Action**: One concrete step we should take based on this research.
+def generate_methodology_scan(model, df):
+    target_df = df.sample(min(40, len(df)))
+    papers_text = "\n".join([f"- {row['Title']} (Method: {clean_html_note(row.get('AI_Note', ''))[:200]})" for i, row in target_df.iterrows()])
+    prompt = f"""{PERSONA}
+    TASK: Analyze research methodologies.
+    Input Data: {papers_text}
+    FORMAT:
+    ### 📊 At a Glance
+    - **Dominant Method:** [Method]
+    - **Missing Method:** [Method]
+    ### 🧩 Method Comparison
+    | Method Type | Est. Count | Best Example |
+    | :--- | :--- | :--- |
+    | (Fill Table) | | |
+    ### 🏆 Opportunity
+    - Use [Method X].
     """
+    return run_ai_generation(model, prompt, "Methodology Scan") + append_bibliography(target_df)
+
+def generate_priority_reading_list(model, df):
+    if 'Alignment_Score' not in df.columns: return "No alignment data available."
+    top = df.nlargest(20, 'Alignment_Score')
+    papers_text = "\n".join([f"- {row['Title']} (Score: {row['Alignment_Score']})" for i, row in top.iterrows()])
+    prompt = f"""{PERSONA}
+    TASK: Create a Reading Plan.
+    Input Data: {papers_text}
+    FORMAT:
+    | 🔥 Priority | 📄 Paper Title | 🧠 Why I should read this (10 words max) |
+    """
+    return run_ai_generation(model, prompt, "Reading List") + append_bibliography(top)
+
+def generate_lit_review_outline(model, df):
+    target_df = df.sample(min(50, len(df)))
+    papers_text = "\n".join([f"- {row['Title']} ({row['Topic']})" for i, row in target_df.iterrows()])
+    prompt = f"""{PERSONA}
+    TASK: Outline a Literature Review Chapter.
+    Input Data: {papers_text}
+    FORMAT:
+    Use Roman Numerals (I, II, III).
+    """
+    return run_ai_generation(model, prompt, "Lit Review Outline") + append_bibliography(target_df)
+
+def generate_gap_analysis(model, df):
+    topic_counts = df['Topic'].value_counts().to_string()
+    prompt = f"""{PERSONA}
+    TASK: Identify gaps.
+    Input Data: {topic_counts}
+    FORMAT:
+    - 🟩 **Well Covered:** [Topics]
+    - 🟥 **Critical Gaps:** [Topics]
+    - 🔭 **Next Search:** [Search Query]
+    """
+    return run_ai_generation(model, prompt, "Gap Analysis")
+
+def generate_connect_the_dots(model, df):
+    sample_df = df.sample(n=min(15, len(df)))
+    papers_text = "\n".join([f"- {row['Title']} ({row['Topic']})" for i, row in sample_df.iterrows()])
+    prompt = f"""{PERSONA}
+    TASK: Find 3 unexpected connections.
+    FORMAT:
+    - 🔗 **[Topic A] + [Topic B]:** (1 sentence explanation).
+    """
+    return run_ai_generation(model, prompt, "Connect the Dots") + append_bibliography(sample_df)
+
+def generate_deep_dive(model, df, keyword, search_columns=['Topic', 'Title']):
+    mask = pd.Series([False] * len(df))
+    for col in search_columns:
+        if col in df.columns: mask = mask | df[col].str.contains(keyword, case=False, na=False)
+    topic_df = df[mask].tail(10)
+    if topic_df.empty: return f"No papers found matching '{keyword}'."
+    papers_text = "\n".join([f"- {row['Title']}: {clean_html_note(row.get('AI_Note', ''))[:500]}" for i, row in topic_df.iterrows()])
+    prompt = f"""{PERSONA}
+    TASK: Deep Dive on '{keyword}'.
+    FORMAT:
+    ### 📘 Definition
+    ### ⚔️ Key Debate
+    ### 🏛️ Implications
+    """
+    return run_ai_generation(model, prompt, f"Deep Dive: {keyword}") + append_bibliography(topic_df)
+
+def update_main_readme(exec_brief, weekly_syn, df):
+    try:
+        ny_time = datetime.datetime.now(ZoneInfo(TIMEZONE))
+    except:
+        ny_time = datetime.datetime.now()
+        
+    timestamp = ny_time.strftime('%Y-%m-%d')
+    
+    total_papers = len(df)
+    try: top_topic = df['Topic'].mode()[0]
+    except: top_topic = "N/A"
+    fuel = 0
+    if 'Alignment_Score' in df.columns and total_papers > 0:
+        fuel = int((df['Alignment_Score'].mean() / 10) * 100)
+    bar_len = int(fuel / 10)
+    progress_bar = "▓" * bar_len + "░" * (10 - bar_len)
+    brief_snippet = exec_brief.split('\n\n')[0] if exec_brief and "FAILED" not in exec_brief else "Update Pending."
+    content = f"""# 🎓 Research Agent Dashboard
+**Last Updated:** {timestamp} | **Owner:** [YOUR_NAME] 
+
+## 📊 Research Status
+| 📚 Total Papers | 🏆 Top Topic | ⛽ Alignment Fuel |
+| :---: | :---: | :---: |
+| **{total_papers}** | **{top_topic}** | **{fuel}%** {progress_bar} |
+
+## 🚀 Strategic Intelligence (Latest)
+{brief_snippet}
+> [Read Full Executive Brief](EXECUTIVE_BRIEF.md)
+
+## 📂 Live Reports
+| Report | Purpose |
+| :--- | :--- |
+| [**Weekly Synthesis**](WEEKLY_SYNTHESIS.md) | State of the Union. |
+| [**The Critic**](THE_CRITIC.md) | **NEW:** Devil's Advocate / Defense Prep. |
+| [**Practitioner Toolkit**](PRACTITIONER_TOOLKIT.md) | Actionable advice for operations. |
+| [**Methodology Scan**](METHODOLOGY_SCAN.md) | Analysis of research methods. |
+| [**Lit Review Outline**](LIT_REVIEW_OUTLINE.md) | Chapter 2 Draft. |
+| [**Priority Reading**](PRIORITY_READING_LIST.md) | Ranked list of what to read next. |
+| [**Gap Analysis**](GAP_ANALYSIS.md) | Where is my research thin? |
+| [**Draft LinkedIn Post**](LINKEDIN_DRAFT.md) | Share your journey. |
+
+## 🔍 Deep Dives
+* [**Generative AI**](DEEP_DIVE_Generative_AI.md)
+* [**Class Assignments**](DEEP_DIVE_Class_Assignment.md)
+
+## 🕸️ Knowledge Graph
+[**View Interactive Map**](interactive_library_graph.html) *(Download raw file to view)*
+"""
+    with open("README.md", "w", encoding='utf-8') as f: f.write(content)
+    print("Saved: README.md (Dashboard Updated)")
+
+def save_file(filename, title, content):
+    if not content:
+        print(f"    [WARNING] No content generated for {filename}. Saving fallback.")
+        content = "Generation failed or returned empty. Check logs."
     
     try:
-        return model.generate_content(prompt).text
-    except: return "Could not generate brief."
-
-def generate_deep_dive(model, df, topic):
-    """
-    Generates a deep dive synthesis for a specific topic using ALL historical data.
-    """
-    # Filter for the specific topic
-    if 'Topic' not in df.columns: return None
+        ny_time = datetime.datetime.now(ZoneInfo(TIMEZONE))
+    except:
+        ny_time = datetime.datetime.now()
+        
+    timestamp = ny_time.strftime('%B %d, %Y at %I:%M %p')
     
-    topic_df = df[df['Topic'] == topic]
-    
-    # If we have too many, take the top 30 most cited
-    if len(topic_df) > 30:
-        topic_df = topic_df.sort_values(by='Citations', ascending=False).head(30)
-    
-    papers_text = ""
-    for index, row in topic_df.iterrows():
-        author = row.get('Author', 'Unknown Authors')
-        if pd.isna(author): author = "Unknown Authors"
-        raw_note = clean_html_note(row.get('AI_Note', ''))[:500] 
-        papers_text += f"\n- {author} ({row['Year']}): {row['Title']}\n  Note: {raw_note}\n"
-
-    prompt = f"""
-    Act as a DBA doctoral candidate writing a Literature Review Chapter.
-    
-    I have collected {len(topic_df)} papers on the topic: **{topic}**.
-    
-    Here is the cumulative data (Historical & New):
-    {papers_text}
-    
-    TASK:
-    Write a "Thematic Deep Dive" (approx 600 words) analyzing the State of the Field for {topic}.
-    
-    STRUCTURE:
-    1. **Evolution of the Field**: How has the conversation on {topic} shifted over time (look at the years)?
-    2. **Dominant Theoretical Lens**: Based on the notes, what theories are most commonly applied? (e.g., Agency Theory vs. Stewardship).
-    3. **Methodological Trends**: Are these mostly case studies, quantitative, or reviews?
-    4. **Gap Analysis**: What is missing from this collection? What should I research next to fill the gap?
-    """
-    
-    try:
-        response = model.generate_content(prompt)
-        return response.text
-    except Exception as e:
-        print(f"AI Deep Dive Error: {e}")
-        return None
-
-def save_file(filename, content):
     with open(filename, "w", encoding='utf-8') as f:
-        f.write(content)
-    print(f"Saved: {filename}")
+        f.write(f"# {title}\n**Generated:** {timestamp}\n\n{content}")
+    print(f"    [SAVED] {filename}")
 
 if __name__ == "__main__":
+    print("--- STARTING SYNTHESIZER ---")
     model = setup_gemini()
     if model:
-        df = load_weekly_data()
+        df = load_matrix_data()
         if df is not None and not df.empty:
-            # 1. Run Weekly Synthesis (Academic)
-            print("Generating Weekly Synthesis...")
-            synthesis = generate_synthesis(model, df)
-            save_file("WEEKLY_SYNTHESIS.md", f"# 🧠 Weekly Dissertation Synthesis\n**Date:** {datetime.datetime.now().strftime('%Y-%m-%d')}\n\n{synthesis}")
             
-            # 2. Run Executive Brief (Practical)
-            print("Generating Executive Brief...")
-            brief = generate_executive_brief(model, df)
-            save_file("EXECUTIVE_BRIEF.md", f"# 💼 CIO Strategic Memo\n**Date:** {datetime.datetime.now().strftime('%Y-%m-%d')}\n\n{brief}")
+            # --- 1. GENERATE LINKEDIN & CRITIC FIRST ---
+            linkedin_post = generate_linkedin_post(model, df)
+            the_critic = generate_devils_advocate(model, df)
+            
+            save_file("LINKEDIN_DRAFT.md", "Thought Leadership Draft", linkedin_post)
+            save_file("THE_CRITIC.md", "The Critic (Defense Prep)", the_critic)
 
-            # 3. Run Topic Deep Dive (History)
-            if 'Topic' in df.columns:
-                counts = Counter(df['Topic'].dropna())
-                if counts:
-                    top_topic = counts.most_common(1)[0][0]
-                    print(f"Generating Deep Dive for top topic: {top_topic}...")
-                    deep_dive = generate_deep_dive(model, df, top_topic)
-                    if deep_dive:
-                        safe_filename = f"DEEP_DIVE_{top_topic.replace(' ', '_')}.md"
-                        save_file(safe_filename, f"# 🌊 Deep Dive: {top_topic}\n**Generated:** {datetime.datetime.now().strftime('%Y-%m-%d')}\n\n{deep_dive}")
+            # --- 2. GENERATE STANDARD REPORTS ---
+            weekly_syn = generate_synthesis(model, df)
+            exec_brief = generate_executive_brief(model, df)
+            
+            save_file("WEEKLY_SYNTHESIS.md", "Weekly Synthesis", weekly_syn)
+            save_file("EXECUTIVE_BRIEF.md", "Strategic Memo", exec_brief)
+
+            save_file("METHODOLOGY_SCAN.md", "Methodology Scan", generate_methodology_scan(model, df))
+            save_file("PRIORITY_READING_LIST.md", "Reading Plan", generate_priority_reading_list(model, df))
+            save_file("LIT_REVIEW_OUTLINE.md", "Chapter 2 Outline", generate_lit_review_outline(model, df))
+            save_file("GAP_ANALYSIS.md", "Gap Analysis", generate_gap_analysis(model, df))
+            save_file("PRACTITIONER_TOOLKIT.md", "Practitioner Toolkit", generate_practitioner_toolkit(model, df))
+            save_file("CONNECT_THE_DOTS.md", "Unexpected Connections", generate_connect_the_dots(model, df))
+            
+            # Custom Deep Dives - Add/Remove as needed
+            save_file("DEEP_DIVE_Generative_AI.md", "Deep Dive: GenAI", generate_deep_dive(model, df, "Generative AI", search_columns=['Topic', 'Title']))
+            
+            update_main_readme(exec_brief, weekly_syn, df)
+            print("--- SYNTHESIS COMPLETE ---")
         else:
             print("No data to synthesize.")
