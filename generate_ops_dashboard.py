@@ -1,5 +1,6 @@
 import pandas as pd
 import datetime
+import os
 
 LOG_FILE = "research_ops_log.csv"
 README_FILE = "README.md"
@@ -54,5 +55,4 @@ def generate_dashboard():
     print("Dashboard updated.")
 
 if __name__ == "__main__":
-    import os
     generate_dashboard()
