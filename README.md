@@ -135,5 +135,30 @@ Privacy: If using GitHub Actions, ensure your repository is Private if you are u
 
 Dependencies: This tool relies on pyzotero and google-generativeai. Keep them updated via pip install -U -r requirements.txt.
 
+## 🧠 Choosing a Gemini Model
+
+Model names change often, and older ones get retired. To keep this template
+working, the scripts auto-detect a model from your API key by default, so you
+usually do not need to set anything.
+
+If you want to force a specific model, you have two options:
+
+1. Edit `MODEL_NAME` in `ai_config.py`.
+2. Set an environment variable, with no code change: `export GEMINI_MODEL="gemini-2.5-flash"`
+
+All scripts read from `ai_config.py`, so this is the single place that controls
+the model. For the current list of model names, see
+https://ai.google.dev/gemini-api/docs/models
+
+To see exactly which models your key can call, run a quick check:
+
+```python
+import google.generativeai as genai, os
+genai.configure(api_key=os.environ["GEMINI_API_KEY"])
+for m in genai.list_models():
+    if "generateContent" in m.supported_generation_methods:
+        print(m.name)
+```
+
 📄 License
 This project is licensed under the MIT License - see the LICENSE file for details.

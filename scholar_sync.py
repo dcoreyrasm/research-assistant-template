@@ -10,12 +10,11 @@ from datetime import datetime
 from pypdf import PdfReader
 from difflib import SequenceMatcher
 from pyzotero import zotero
-import google.generativeai as genai
+from ai_config import setup_gemini
 
 # --- CONFIGURATION ---
 LIBRARY_ID = os.environ.get('ZOTERO_USER_ID')
 API_KEY = os.environ.get('ZOTERO_API_KEY')
-GEMINI_KEY = os.environ.get('GEMINI_API_KEY')
 LIBRARY_TYPE = 'user' # or 'group'
 
 # DATE & TAGGING
@@ -60,30 +59,6 @@ RSS_FEEDS = [
 ]
 
 # --- END USER CONFIGURATION ---
-
-def setup_gemini():
-    """Robust connection logic that hunts for a working model version."""
-    if not GEMINI_KEY:
-        print("  [Setup Error] GEMINI_API_KEY is missing.")
-        return None
-    try:
-        genai.configure(api_key=GEMINI_KEY)
-        candidates = [
-            "gemini-1.5-flash-001", "gemini-1.5-flash", "gemini-1.5-flash-002",
-            "gemini-1.5-pro", "gemini-pro"
-        ]
-        for model_name in candidates:
-            try:
-                model = genai.GenerativeModel(model_name)
-                model.generate_content("Test")
-                print(f"  [Setup] Success! Connected using: {model_name}")
-                return model
-            except Exception: continue
-        print("  [Setup Error] Could not connect to ANY Gemini model.")
-        return None
-    except Exception as e:
-        print(f"  [Setup Error] Configuration failed: {e}")
-        return None
 
 def extract_text_from_pdf(pdf_path):
     try:

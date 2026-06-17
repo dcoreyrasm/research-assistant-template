@@ -1,11 +1,10 @@
 import pandas as pd
-import google.generativeai as genai
+from ai_config import setup_gemini
 import os
 import time
 
 # --- CONFIGURATION ---
 INPUT_FILE = "literature_matrix.csv"
-GEMINI_KEY = os.environ.get('GEMINI_API_KEY')
 
 # Your Official Controlled Vocabulary
 # USER: Update this list with the topics relevant to your research.
@@ -14,24 +13,6 @@ VALID_TOPICS = [
     "Methodology X", "Methodology Y",
     "Theory Z", "Theory Q"
 ]
-
-def setup_gemini():
-    """Auto-discovery connection (Nuclear Option)."""
-    if not GEMINI_KEY:
-        print("Error: Missing Gemini Key.")
-        return None
-    try:
-        genai.configure(api_key=GEMINI_KEY)
-        candidates = ["gemini-1.5-flash-001", "gemini-1.5-flash", "gemini-1.5-pro", "gemini-pro"]
-        for model_name in candidates:
-            try:
-                model = genai.GenerativeModel(model_name)
-                model.generate_content("Test")
-                print(f"  [Setup] Connected to: {model_name}")
-                return model
-            except: continue
-        return None
-    except: return None
 
 def get_true_topic(model, title, abstract):
     """Asks AI to classify the paper."""

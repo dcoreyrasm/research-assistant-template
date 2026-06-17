@@ -2,7 +2,7 @@ from pyzotero import zotero
 import time
 import os
 import requests
-import google.generativeai as genai
+from ai_config import setup_gemini, MODEL_NAME as CURRENT_MODEL
 import pandas as pd
 import re
 import glob
@@ -13,13 +13,11 @@ from pypdf import PdfReader
 # --- CONFIGURATION ---
 LIBRARY_ID = os.environ.get('ZOTERO_USER_ID')
 API_KEY = os.environ.get('ZOTERO_API_KEY')
-GEMINI_KEY = os.environ.get('GEMINI_API_KEY')
 LIBRARY_TYPE = 'user'
 
 # --- LOGGING CONFIG ---
 LOG_FILE = "research_ops_log.csv"
 PROMPT_VERSION = "v2.3_Manual_Bib"
-CURRENT_MODEL = "gemini-1.5-flash-001"
 
 # --- TARGET ARTICLES (Pre-Filled) ---
 # USER: Add specific URLs/DOIs you want to force-import here.
@@ -41,14 +39,6 @@ VOCAB_METHOD = [
 VOCAB_CONTEXT = [
     "Context A", "Context B", "Context C"
 ]
-
-def setup_gemini():
-    if not GEMINI_KEY: return None
-    genai.configure(api_key=GEMINI_KEY)
-    try:
-        return genai.GenerativeModel('gemini-1.5-flash-001')
-    except:
-        return genai.GenerativeModel('gemini-1.5-flash')
 
 def log_operation(action, title, details, status):
     """Writes a permanent record of every robot action to a CSV."""

@@ -2,7 +2,7 @@ from pyzotero import zotero
 import time
 import os
 import requests
-import google.generativeai as genai
+from ai_config import setup_gemini
 import re
 from pypdf import PdfReader
 import io
@@ -10,18 +10,11 @@ import io
 # --- CONFIGURATION ---
 LIBRARY_ID = os.environ.get('ZOTERO_USER_ID')
 API_KEY = os.environ.get('ZOTERO_API_KEY')
-GEMINI_KEY = os.environ.get('GEMINI_API_KEY')
 LIBRARY_TYPE = 'user'
 
 # --- FILTER SETTINGS ---
 # Only process papers published in or after this year
 MIN_PUBLISH_YEAR = 1900 
-
-def setup_gemini():
-    if not GEMINI_KEY: return None
-    genai.configure(api_key=GEMINI_KEY)
-    try: return genai.GenerativeModel('gemini-1.5-flash-001')
-    except: return genai.GenerativeModel('gemini-1.5-flash')
 
 def analyze_paper_with_ai(model, title, text_content):
     if not model or not text_content: return None

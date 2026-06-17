@@ -3,11 +3,10 @@ import pandas as pd
 import datetime
 import time
 import re
-import google.generativeai as genai
+from ai_config import setup_gemini
 from zoneinfo import ZoneInfo 
 
 # --- CONFIGURATION ---
-GEMINI_KEY = os.environ.get('GEMINI_API_KEY')
 TIMEZONE = "America/New_York" # Change to your local timezone
 
 # --- PERSONA & CONTEXT ---
@@ -23,58 +22,6 @@ STRICT STYLE GUIDE (AGGRESSIVE SIMPLIFICATION):
 3. **SCANNABLE:** Use Emojis as visual anchors. Use bolding for key terms.
 4. **SIMPLE:** Write at an 8th-grade reading level. No academic jargon.
 """
-
-def setup_gemini():
-    """Dynamically asks Google for available models to avoid 404s."""
-    if not GEMINI_KEY:
-        print("Error: Missing Gemini Key.")
-        return None
-    try:
-        # Use REST to avoid GitHub blocking gRPC
-        genai.configure(api_key=GEMINI_KEY, transport="rest")
-        
-        print("  [Setup] Asking Google for available models...")
-        available_models = []
-        
-        # 1. Ask API what is available
-        try:
-            for m in genai.list_models():
-                if 'generateContent' in m.supported_generation_methods:
-                    available_models.append(m.name)
-        except Exception as e:
-            print(f"  [Setup Error] Could not list models (API likely not enabled): {e}")
-            return None
-
-        if not available_models:
-            print("  [Setup Error] API Key is valid, but no models are available.")
-            print("  ACTION REQUIRED: Go to Google Cloud Console -> Enable 'Generative Language API'.")
-            return None
-
-        # 2. Pick the best one (Prioritize Flash > Pro > Standard)
-        preferred_order = [
-            'models/gemini-1.5-flash',
-            'models/gemini-1.5-pro',
-            'models/gemini-pro'
-        ]
-        
-        selected_model = available_models[0] # Default to the first one found
-        
-        # Try to find a preferred one
-        for pref in preferred_order:
-            for avail in available_models:
-                if pref in avail:
-                    selected_model = avail
-                    break
-            else:
-                continue
-            break
-            
-        print(f"  [Setup] SUCCESS! Auto-selected model: {selected_model}")
-        return genai.GenerativeModel(selected_model)
-
-    except Exception as e:
-        print(f"  [Setup Error] Configuration failed: {e}")
-        return None
 
 def load_matrix_data():
     try:
